@@ -4,15 +4,17 @@ Let a local agent drive your Minecraft client.
 
 ## Overview
 
-Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON API on `127.0.0.1`, so a script or an AI agent on the same machine can see what the player sees and act for them: walk, look, place and break blocks, click through inventories and storage terminals, chat, and path across the world with Baritone. It ships as a single mod jar plus a shell CLI, and needs nothing on the server.
+Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON API on `127.0.0.1`, so a script or an AI agent on the same machine can see what the player sees and act for them: read a build block by block, rebuild it to a list of exact block states, click through inventories and storage terminals, chat, and path across the world with Baritone. It is meant for survival play on a normal server, so it does everything through the player's own hands and inventory. It ships as a single mod jar plus a shell CLI, and needs nothing on the server.
 
 ## Features
 
 * **Player state**: position, rotation, health, hunger, held item, the block or entity under the crosshair.
-* **World queries**: read any loaded block, scan nearby blocks or entities by id.
-* **Actions**: look at a point, hold movement keys for a number of ticks, place the held block at a position, break a block, use or attack.
+* **World queries**: read any loaded block, scan nearby blocks or entities by id, dump a box of blocks as text layers with full states.
+* **Building**: give a list of positions and block states; tether skips what already matches, mines what's wrong with the best tool, puts the right item in hand and places it with the right orientation (stairs, slabs, logs, trapdoors, doors, lanterns, torches, modded blocks), opens or shuts doors and trapdoors, and re-reads everything at the end.
+* **Reach**: walks into reach with Baritone, collects the drops, and can jump-place a pillar to get at roofs.
+* **Actions**: look at a point, hold movement keys for a number of ticks, use or attack.
 * **Screens**: list widgets and menu slots with their screen coordinates, click slots, click at coordinates (with shift), type into text boxes, press keys.
-* **Tom's Simple Storage**: list everything an open terminal holds and pull whole stacks by item id.
+* **Tom's Simple Storage**: list everything an open terminal holds, pull whole stacks by item id, push inventory back.
 * **Baritone**: run any Baritone command (`goto`, `mine`, `follow`, ...) and wait until it finishes. Block breaking and placing during pathing are switched off by default.
 * **Chat**: send chat messages and commands, read recent messages.
 * **Local only**: listens on loopback with a random port and a per-launch token stored in a user-only file.
@@ -48,11 +50,14 @@ tether state                                  # where am I, what am I looking at
 tether look x=100.5 y=65 z=-20.5
 tether move keys='["forward","sprint"]' ticks=40
 tether select slot=2
-tether place x=101 y=64 z=-20
+tether region x1=0 y1=64 z1=0 x2=12 y2=72 z2=10   # read a house
+tether place x=101 y=64 z=-20 block='minecraft:oak_stairs[facing=north,half=top]'
+tether build "$(cat plan.json)"                 # see Building
 tether break x=101 y=64 z=-20
 tether use x=930 y=68 z=637                   # open the block there
 tether storage match=oak                      # Tom's terminal contents
 tether storage/pull item=minecraft:oak_planks stacks=2
+tether storage/push item=minecraft:cobblestone
 tether screen/close
 tether baritone command='goto 200 70 -50'
 tether baritone/wait timeout=120
@@ -80,10 +85,16 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `stop` | | Releases keys, aborts breaking, cancels Baritone. |
 | `block` | `x y z` | Block id and state at a position. |
 | `blocks` | `radius` 1-32, `match`, `limit` | Nearby non-air blocks, nearest first. |
+| `region` | `x1 y1 z1 x2 y2 z2`, `states` | A box (up to 65536 blocks) as text layers plus a palette of block states. |
 | `entities` | `radius`, `match` | Nearby entities with ids. |
 | `use` | `x y z` and optional `face`, or nothing | Right-clicks a block, or uses the held item. |
-| `place` | `x y z` | Places the held block there against a solid neighbour. |
-| `break` | `x y z` | Mines the block, returns when it's gone (30 s limit). |
+| `place` | `x y z`, optional `block`, `walk` | Places one block (default: the held one); a one-step `build`. |
+| `place/options` | `x y z`, `block` | Every state that block could be placed as there, from where the player stands. |
+| `break` | `x y z`, `walk`, `pickup` | Mines one block; a one-step `build` to air. |
+| `build` | `blocks`, `origin`, `walk`, `pickup`, `perTick` 1-4, `wait`, `timeout` | Applies a list of `{x, y, z, block}`; see Building. |
+| `build/status` | | Progress of the running build. |
+| `pillar` | `height` 1-16, `block` (default dirt) | Jump-places a column under the player; returns the positions. |
+| `view` | `hideGui`, `camera` (first, back, front) | Hides the HUD or changes perspective, for screenshots. |
 | `attack` | `id` | Attacks an entity. |
 | `screen` | | Open screen, its widgets, menu slots and their coordinates. |
 | `screen/click` | `slot`, `button`, `type` (pickup, quick_move, swap, throw, ...) | Clicks a menu slot; works on the player inventory with no screen open. |
@@ -93,6 +104,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `screen/close` | | Closes the open screen. |
 | `storage` | `match` | Items in the open Tom's terminal. |
 | `storage/pull` | `item` or `index`, `stacks` | Pulls whole stacks into the inventory. |
+| `storage/push` | `item`, `hotbar` | Shift-clicks inventory slots into the open container (all but the hotbar by default). |
 | `chat` | `message` | Sends chat, or a command if it starts with `/`. |
 | `chat/log` | `since` | Messages after sequence number `since`. |
 | `baritone` | `command` | Runs a Baritone command (without the `#`). |
@@ -101,10 +113,41 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 
 While an agent has called the API in the last two minutes, the game doesn't open the pause menu when its window loses focus.
 
+## Building
+
+`build` takes a list of target blocks, in the same `minecraft:block[prop=value]` syntax as `/setblock` and as `region` prints them, plus `"air"` to clear a spot:
+
+```json
+{
+  "origin": {"x": 100, "y": 64, "z": -20},
+  "walk": true,
+  "pickup": true,
+  "blocks": [
+    {"x": 0, "y": 0, "z": 0, "block": "minecraft:oak_log[axis=y]"},
+    {"x": 1, "y": 3, "z": -1, "block": "minecraft:spruce_stairs[facing=south,half=bottom]"},
+    {"x": 2, "y": 2, "z": -1, "block": "minecraft:spruce_trapdoor[facing=north,half=top,open=true]"},
+    {"x": 3, "y": 1, "z": 0, "block": "air"}
+  ]
+}
+```
+
+Steps run in order, one per tick by default:
+
+* A position that already matches is left alone. Only the properties you name are compared, and properties placement can't choose (connections, stair shape, waterlogging, power, `open`) are ignored, so a state copied from `region` matches what placing it produces.
+* A wrong block is mined with the fastest hotbar tool, then the right item is moved into the hotbar and placed.
+* The placement planner asks the item itself (the same code the server runs) what each clickable face, hit height and facing would produce, and uses the option that matches with the least head movement. Placement always sneaks, so clicking a chest or terminal places against it.
+* `open=true` or `open=false` is applied by clicking the door, trapdoor or gate after placing it.
+* A block with nothing to place against is retried once at the end, after its neighbours exist. If it still can't be placed, the problem lists the states that are reachable from there; `place/options` shows the same thing ahead of time.
+* With `walk`, Baritone paths within reach of out-of-reach blocks; with `pickup`, it walks over the drops afterwards. Both need Baritone.
+* Ten ticks after the last step every position is read again; anything the server rejected is reported as a mismatch.
+
+The result counts what was placed, broken or already right, and lists only the problems. For roofs above reach, `pillar` up first and clear the returned positions top-down with `build` and `"air"` when done.
+
 ## Development
 
 * Build: `./gradlew build`
-* Run a dev client: `./gradlew runClient`
+* Run a dev server: `./gradlew runServer` (in `run/server`)
+* Run a dev client: `./gradlew runClient` (in `run/client`)
 * Clean: `./gradlew clean`
 
 ## Contributing

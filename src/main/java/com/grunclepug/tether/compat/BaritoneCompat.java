@@ -42,6 +42,24 @@ public final class BaritoneCompat {
         return o;
     }
 
+    /** Paths to within radius blocks of pos, using the same safe defaults as {@link #run}. */
+    public static void goNear(net.minecraft.core.BlockPos pos, int radius) {
+        applySafeDefaults();
+        baritone().getCustomGoalProcess().setGoalAndPath(new baritone.api.pathing.goals.GoalNear(pos, radius));
+    }
+
+    /** Paths onto a block position (to pick up an item lying there). */
+    public static void goTo(net.minecraft.core.BlockPos pos) {
+        applySafeDefaults();
+        baritone().getCustomGoalProcess().setGoalAndPath(new baritone.api.pathing.goals.GoalBlock(pos));
+    }
+
+    public static boolean busy() {
+        IBaritone b = baritone();
+        return b.getPathingBehavior().isPathing()
+                || b.getPathingControlManager().mostRecentInControl().filter(proc -> proc.isActive()).isPresent();
+    }
+
     public static void cancel() {
         baritone().getPathingBehavior().cancelEverything();
     }

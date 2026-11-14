@@ -25,7 +25,8 @@ public final class Tether implements ClientModInitializer {
         ClientTickEvents.START_CLIENT_TICK.register(Actions::tick);
 
         FabricLoader loader = FabricLoader.getInstance();
-        Routes routes = new Routes(chat, loader.isModLoaded("baritone"), loader.isModLoaded("toms_storage"));
+        Actions.baritone = loader.isModLoaded("baritone");
+        Routes routes = new Routes(chat, Actions.baritone, loader.isModLoaded("toms_storage"));
         try {
             new ApiServer(routes.all()).start(sessionFile());
         } catch (Exception e) {

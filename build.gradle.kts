@@ -41,3 +41,11 @@ tasks.processResources {
     inputs.properties(props)
     filesMatching("fabric.mod.json") { expand(props) }
 }
+
+loom {
+    runs {
+        // Separate directories so a dev client and a dev server can run side by side for testing.
+        named("client") { runDir("run/client") }
+        named("server") { runDir("run/server") }
+    }
+}

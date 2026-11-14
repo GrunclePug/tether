@@ -3,9 +3,9 @@ package com.grunclepug.tether;
 import com.google.gson.JsonObject;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.world.InteractionHand;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.HashMap;
 import java.util.Iterator;
@@ -13,24 +13,24 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Actions that span several ticks: held movement keys and block breaking. Everything here runs on the client
+ * Actions that span several ticks: held movement keys and the current build job. Everything here runs on the client
  * thread, driven by {@link #tick(Minecraft)} at the start of each client tick.
  */
 public final class Actions {
+    /** Whether Baritone is loaded; set once at startup. */
+    static boolean baritone;
+
     private static final Map<KeyMapping, Integer> held = new HashMap<>();
     private static CompletableFuture<JsonObject> moveDone;
-
-    private static BlockPos breakPos;
-    private static Direction breakFace;
-    private static int breakTicksLeft;
-    private static CompletableFuture<JsonObject> breakDone;
+    private static BuildJob job;
+    private static PillarJob pillar;
 
     private Actions() {
     }
 
-    /** True while a break is in progress; vanilla's attack handling is suppressed so it doesn't abort it. */
+    /** True while a job is mining; vanilla's attack handling is suppressed so it doesn't abort the break. */
     public static boolean breaking() {
-        return breakPos != null;
+        return job != null && job.breaking();
     }
 
     static CompletableFuture<JsonObject> hold(Map<KeyMapping, Integer> keys) {
@@ -40,23 +40,51 @@ public final class Actions {
         return moveDone;
     }
 
-    static CompletableFuture<JsonObject> startBreak(Minecraft mc, BlockPos pos, Direction face) {
-        finishBreak(false, "replaced");
-        breakPos = pos;
-        breakFace = face;
-        breakTicksLeft = 20 * 30;
-        breakDone = new CompletableFuture<>();
-        mc.gameMode.startDestroyBlock(pos, face);
-        mc.player.swing(InteractionHand.MAIN_HAND);
-        return breakDone;
+    static CompletableFuture<JsonObject> startJob(Minecraft mc, BuildJob next) {
+        if (job != null) {
+            job.cancel(mc);
+        }
+        if (pillar != null) {
+            pillar.cancel(mc);
+            pillar = null;
+        }
+        job = next;
+        return next.future();
+    }
+
+    static CompletableFuture<JsonObject> startPillar(Minecraft mc, PillarJob next) {
+        stopAll(mc);
+        pillar = next;
+        return next.future();
+    }
+
+    static JsonObject jobProgress() {
+        if (job == null) {
+            JsonObject o = new JsonObject();
+            o.addProperty("phase", "idle");
+            return o;
+        }
+        return job.progress();
     }
 
     static void stopAll(Minecraft mc) {
         finishMove("stopped");
-        if (breakPos != null && mc.gameMode != null) {
-            mc.gameMode.stopDestroyBlock();
+        if (job != null) {
+            job.cancel(mc);
+            job = null;
         }
-        finishBreak(false, "stopped");
+        if (pillar != null) {
+            pillar.cancel(mc);
+            pillar = null;
+        }
+    }
+
+    static void lookAt(LocalPlayer p, Vec3 target) {
+        Vec3 d = target.subtract(p.getEyePosition());
+        double horizontal = Math.sqrt(d.x * d.x + d.z * d.z);
+        p.setYRot((float) (Mth.atan2(d.z, d.x) * Mth.RAD_TO_DEG) - 90f);
+        p.setXRot((float) -(Mth.atan2(d.y, horizontal) * Mth.RAD_TO_DEG));
+        p.setYHeadRot(p.getYRot());
     }
 
     static void tick(Minecraft mc) {
@@ -80,15 +108,18 @@ public final class Actions {
                 finishMove("done");
             }
         }
-        if (breakPos != null) {
-            if (mc.level.getBlockState(breakPos).isAir()) {
-                finishBreak(true, "broken");
-            } else if (--breakTicksLeft <= 0) {
-                mc.gameMode.stopDestroyBlock();
-                finishBreak(false, "timed out");
-            } else {
-                mc.gameMode.continueDestroyBlock(breakPos, breakFace);
-                mc.player.swing(InteractionHand.MAIN_HAND);
+        if (job != null) {
+            Agent.touch();
+            job.tick(mc);
+            if (job.finished()) {
+                job = null;
+            }
+        }
+        if (pillar != null) {
+            Agent.touch();
+            pillar.tick(mc);
+            if (pillar.finished()) {
+                pillar = null;
             }
         }
     }
@@ -104,16 +135,5 @@ public final class Actions {
             moveDone.complete(o);
             moveDone = null;
         }
-    }
-
-    private static void finishBreak(boolean ok, String result) {
-        if (breakDone != null) {
-            JsonObject o = new JsonObject();
-            o.addProperty("ok", ok);
-            o.addProperty("result", result);
-            breakDone.complete(o);
-        }
-        breakPos = null;
-        breakDone = null;
     }
 }

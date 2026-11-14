@@ -12,12 +12,10 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.events.GuiEventListener;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
-import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
-import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
 import net.minecraft.util.Mth;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -46,9 +44,6 @@ import java.util.function.Supplier;
 
 /** The API's routes. Handlers run on an HTTP thread and hop onto the client thread for anything touching the game. */
 final class Routes {
-    private static final Direction[] PLACE_ORDER = {
-            Direction.DOWN, Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST, Direction.UP};
-
     private final Minecraft mc = Minecraft.getInstance();
     private final ChatLog chat;
     private final boolean baritone;
@@ -73,8 +68,14 @@ final class Routes {
         r.put("blocks", a -> client(() -> blocks(a)));
         r.put("entities", a -> client(() -> entities(a)));
         r.put("use", a -> client(() -> use(a)));
-        r.put("place", a -> client(() -> place(a)));
+        r.put("region", a -> client(() -> region(a)));
+        r.put("place", this::place);
+        r.put("place/options", a -> client(() -> placeOptions(a)));
         r.put("break", this::breakBlock);
+        r.put("build", this::build);
+        r.put("build/status", a -> client(Actions::jobProgress));
+        r.put("pillar", this::pillar);
+        r.put("view", a -> client(() -> view(a)));
         r.put("attack", a -> client(() -> attack(a)));
         r.put("screen", a -> client(this::screen));
         r.put("screen/click", a -> client(() -> screenClick(a)));
@@ -84,6 +85,7 @@ final class Routes {
         r.put("screen/close", a -> client(this::screenClose));
         r.put("storage", a -> client(() -> storage(a)));
         r.put("storage/pull", a -> client(() -> storagePull(a)));
+        r.put("storage/push", a -> client(() -> storagePush(a)));
         r.put("chat", a -> client(() -> sendChat(a)));
         r.put("chat/log", a -> chatLog(a));
         r.put("baritone", a -> client(() -> baritoneRun(a)));
@@ -221,7 +223,7 @@ final class Routes {
     private JsonObject look(JsonObject a) {
         LocalPlayer p = player();
         if (Args.has(a, "x")) {
-            lookAt(p, new Vec3(Args.d(a, "x"), Args.d(a, "y"), Args.d(a, "z")));
+            Actions.lookAt(p, new Vec3(Args.d(a, "x"), Args.d(a, "y"), Args.d(a, "z")));
         } else {
             p.setYRot((float) Args.d(a, "yaw"));
             p.setXRot(Mth.clamp((float) Args.d(a, "pitch"), -90f, 90f));
@@ -230,14 +232,6 @@ final class Routes {
         o.addProperty("yaw", Mth.wrapDegrees(p.getYRot()));
         o.addProperty("pitch", p.getXRot());
         return o;
-    }
-
-    private static void lookAt(LocalPlayer p, Vec3 target) {
-        Vec3 d = target.subtract(p.getEyePosition());
-        double horizontal = Math.sqrt(d.x * d.x + d.z * d.z);
-        p.setYRot((float) (Mth.atan2(d.z, d.x) * Mth.RAD_TO_DEG) - 90f);
-        p.setXRot((float) -(Mth.atan2(d.y, horizontal) * Mth.RAD_TO_DEG));
-        p.setYHeadRot(p.getYRot());
     }
 
     private JsonObject move(JsonObject a) throws Exception {
@@ -393,78 +387,192 @@ final class Routes {
             throw new ApiException("face must be one of down, up, north, south, west, east");
         }
         Vec3 hit = center.relative(face, 0.5);
-        lookAt(p, hit);
+        Actions.lookAt(p, hit);
         return result(mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, pos, false)),
                 InteractionHand.MAIN_HAND);
     }
 
-    /** Place the held block at a position by clicking a solid neighbour, sneaking if the neighbour is a container. */
-    private JsonObject place(JsonObject a) {
+    /** Place one block (by default whatever's in hand) at a position; a one-step build. */
+    private JsonObject place(JsonObject a) throws Exception {
+        CompletableFuture<JsonObject> done = client(() -> {
+            LocalPlayer p = player();
+            String spec = Args.s(a, "block", null);
+            if (spec == null) {
+                if (!(p.getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem bi)) {
+                    throw new ApiException("nothing placeable in hand; pass block=<id[state]>");
+                }
+                spec = BuiltInRegistries.BLOCK.getKey(bi.getBlock()).toString();
+            }
+            return Actions.startJob(mc, new BuildJob(List.of(BuildJob.step(Args.pos(a), spec)), Args.b(a, "walk", false), false, 1));
+        });
+        return await(done, 60);
+    }
+
+    /** Jump-places a column of blocks under the player (to reach a roof); returns the positions to clear later. */
+    private JsonObject pillar(JsonObject a) throws Exception {
+        int height = Args.i(a, "height");
+        if (height < 1 || height > 16) {
+            throw new ApiException("height must be 1-16");
+        }
+        CompletableFuture<JsonObject> done = client(() -> {
+            player();
+            String spec = Args.s(a, "block", "minecraft:dirt");
+            net.minecraft.world.item.Item item = BuildJob.step(BlockPos.ZERO, spec).want().getBlock().asItem();
+            return Actions.startPillar(mc, new PillarJob(item, height));
+        });
+        return await(done, 10 + height * 3L);
+    }
+
+    /** Which states the given block could be placed as at a position, from where the player stands now. */
+    private JsonObject placeOptions(JsonObject a) {
         LocalPlayer p = player();
-        ClientLevel level = mc.level;
         BlockPos pos = Args.pos(a);
-        if (!level.getBlockState(pos).canBeReplaced()) {
-            throw new ApiException(pos.toShortString() + " is occupied by " + id(level.getBlockState(pos)));
+        net.minecraft.world.item.Item item = BuildJob.step(pos, Args.s(a, "block")).want().getBlock().asItem();
+        if (!Hotbar.hold(mc, p, item)) {
+            throw new ApiException("no " + BuiltInRegistries.ITEM.getKey(item) + " in inventory");
         }
-        if (p.getMainHandItem().isEmpty()) {
-            throw new ApiException("nothing in hand; select a hotbar slot with a block first");
-        }
-        requireReach(p, pos);
-        Direction side = null;
-        boolean sneak = false;
-        for (Direction d : PLACE_ORDER) {
-            BlockPos n = pos.relative(d);
-            BlockState ns = level.getBlockState(n);
-            if (ns.canBeReplaced()) {
-                continue;
-            }
-            boolean interactive = level.getBlockEntity(n) != null || ns.getMenuProvider(level, n) != null;
-            if (!interactive) {
-                side = d;
-                sneak = false;
-                break;
-            }
-            if (side == null) {
-                side = d;
-                sneak = true;
-            }
-        }
-        if (side == null) {
-            throw new ApiException("nothing solid next to " + pos.toShortString() + " to place against");
-        }
-        BlockPos against = pos.relative(side);
-        Direction face = side.getOpposite();
-        Vec3 hit = Vec3.atCenterOf(against).relative(face, 0.5);
-        lookAt(p, hit);
-        if (sneak) {
-            p.setShiftKeyDown(true);
-            mc.getConnection().send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY));
-        }
-        InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, against, false));
-        if (sneak) {
-            p.setShiftKeyDown(false);
-            mc.getConnection().send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.RELEASE_SHIFT_KEY));
-        }
-        JsonObject o = result(r, InteractionHand.MAIN_HAND);
-        o.addProperty("against", against.toShortString());
-        o.addProperty("sneaked", sneak);
+        JsonArray states = new JsonArray();
+        Placement.options(mc, p, pos).forEach(states::add);
+        JsonObject o = new JsonObject();
+        o.add("states", states);
         return o;
     }
 
     private JsonObject breakBlock(JsonObject a) throws Exception {
         CompletableFuture<JsonObject> done = client(() -> {
-            LocalPlayer p = player();
-            BlockPos pos = Args.pos(a);
-            if (mc.level.getBlockState(pos).isAir()) {
-                throw new ApiException(pos.toShortString() + " is already air");
-            }
-            requireReach(p, pos);
-            Vec3 center = Vec3.atCenterOf(pos);
-            Direction face = Direction.getNearest(p.getEyePosition().subtract(center));
-            lookAt(p, center.relative(face, 0.5));
-            return Actions.startBreak(mc, pos, face);
+            player();
+            return Actions.startJob(mc, new BuildJob(List.of(BuildJob.step(Args.pos(a), "air")), Args.b(a, "walk", false), Args.b(a, "pickup", false), 1));
         });
-        return await(done, 35);
+        return await(done, 60);
+    }
+
+    /**
+     * Applies a list of {x, y, z, block} (block "air" to clear) in order: skips what already matches, mines what's
+     * wrong, places the rest with the right orientation. Positions can also be given relative to an origin.
+     */
+    private JsonObject build(JsonObject a) throws Exception {
+        if (!Args.has(a, "blocks")) {
+            throw new ApiException("missing 'blocks': [{x, y, z, block}, ...]");
+        }
+        int ox = 0, oy = 0, oz = 0;
+        if (Args.has(a, "origin")) {
+            JsonObject o = a.getAsJsonObject("origin");
+            ox = Args.i(o, "x");
+            oy = Args.i(o, "y");
+            oz = Args.i(o, "z");
+        }
+        List<BuildJob.Step> steps = new ArrayList<>();
+        for (var e : a.getAsJsonArray("blocks")) {
+            JsonObject b = e.getAsJsonObject();
+            steps.add(BuildJob.step(new BlockPos(ox + Args.i(b, "x"), oy + Args.i(b, "y"), oz + Args.i(b, "z")),
+                    Args.s(b, "block")));
+        }
+        if (steps.isEmpty() || steps.size() > 4096) {
+            throw new ApiException("blocks must have 1-4096 entries");
+        }
+        int perTick = Math.max(1, Math.min(Args.i(a, "perTick", 1), 4));
+        boolean walk = Args.b(a, "walk", false);
+        boolean pickup = Args.b(a, "pickup", false);
+        CompletableFuture<JsonObject> done = client(() -> {
+            player();
+            if ((walk || pickup) && !baritone) {
+                throw new ApiException("walk and pickup need Baritone");
+            }
+            return Actions.startJob(mc, new BuildJob(steps, walk, pickup, perTick));
+        });
+        if (!Args.b(a, "wait", true)) {
+            return client(Actions::jobProgress);
+        }
+        int timeout = Math.min(Args.i(a, "timeout", 300), 590);
+        try {
+            return await(done, timeout);
+        } catch (java.util.concurrent.TimeoutException e) {
+            JsonObject o = client(Actions::jobProgress);
+            o.addProperty("note", "still running; poll build/status, or stop");
+            return o;
+        }
+    }
+
+    /**
+     * A box of blocks as text: one entry per y layer, one string per z row, one character per x column, decoded by
+     * the palette ('.' is air). Full block states by default; states=false lists bare ids for a smaller palette.
+     */
+    private JsonObject region(JsonObject a) {
+        player();
+        int x1 = Math.min(Args.i(a, "x1"), Args.i(a, "x2")), x2 = Math.max(Args.i(a, "x1"), Args.i(a, "x2"));
+        int y1 = Math.min(Args.i(a, "y1"), Args.i(a, "y2")), y2 = Math.max(Args.i(a, "y1"), Args.i(a, "y2"));
+        int z1 = Math.min(Args.i(a, "z1"), Args.i(a, "z2")), z2 = Math.max(Args.i(a, "z1"), Args.i(a, "z2"));
+        long volume = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+        if (volume > 65536) {
+            throw new ApiException("region too large (" + volume + " blocks, max 65536)");
+        }
+        boolean states = Args.b(a, "states", true);
+        String symbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789#$%&*+=?@^~<>!;:/|";
+        Map<String, Character> palette = new LinkedHashMap<>();
+        JsonArray layers = new JsonArray();
+        BlockPos.MutableBlockPos m = new BlockPos.MutableBlockPos();
+        for (int y = y1; y <= y2; y++) {
+            JsonArray rows = new JsonArray();
+            for (int z = z1; z <= z2; z++) {
+                StringBuilder row = new StringBuilder();
+                for (int x = x1; x <= x2; x++) {
+                    BlockState s = mc.level.getBlockState(m.set(x, y, z));
+                    if (s.isAir()) {
+                        row.append('.');
+                        continue;
+                    }
+                    String key = states
+                            ? net.minecraft.commands.arguments.blocks.BlockStateParser.serialize(s)
+                            : id(s);
+                    Character c = palette.get(key);
+                    if (c == null) {
+                        if (palette.size() >= symbols.length()) {
+                            throw new ApiException("more than " + symbols.length()
+                                    + " distinct blocks; shrink the region or pass states=false");
+                        }
+                        c = symbols.charAt(palette.size());
+                        palette.put(key, c);
+                    }
+                    row.append(c);
+                }
+                rows.add(row.toString());
+            }
+            JsonObject layer = new JsonObject();
+            layer.addProperty("y", y);
+            layer.add("rows", rows);
+            layers.add(layer);
+        }
+        JsonObject pal = new JsonObject();
+        palette.forEach((k, v) -> pal.addProperty(String.valueOf(v), k));
+        JsonObject o = new JsonObject();
+        JsonObject origin = new JsonObject();
+        origin.addProperty("x", x1);
+        origin.addProperty("y", y1);
+        origin.addProperty("z", z1);
+        o.add("origin", origin);
+        o.addProperty("layout", "layers[y].rows[z - origin.z].charAt(x - origin.x)");
+        o.add("palette", pal);
+        o.add("layers", layers);
+        return o;
+    }
+
+    /** Hide the HUD and switch camera perspective, for taking a look at a build. */
+    private JsonObject view(JsonObject a) {
+        if (Args.has(a, "hideGui")) {
+            mc.options.hideGui = Args.b(a, "hideGui", false);
+        }
+        if (Args.has(a, "camera")) {
+            mc.options.setCameraType(switch (Args.s(a, "camera")) {
+                case "first" -> net.minecraft.client.CameraType.FIRST_PERSON;
+                case "back" -> net.minecraft.client.CameraType.THIRD_PERSON_BACK;
+                case "front" -> net.minecraft.client.CameraType.THIRD_PERSON_FRONT;
+                default -> throw new ApiException("camera must be first, back or front");
+            });
+        }
+        JsonObject o = ok();
+        o.addProperty("hideGui", mc.options.hideGui);
+        o.addProperty("camera", mc.options.getCameraType().name().toLowerCase(Locale.ROOT));
+        return o;
     }
 
     private JsonObject attack(JsonObject a) {
@@ -473,7 +581,7 @@ final class Routes {
         if (e == null) {
             throw new ApiException("no entity with that id");
         }
-        lookAt(p, e.getBoundingBox().getCenter());
+        Actions.lookAt(p, e.getBoundingBox().getCenter());
         mc.gameMode.attack(p, e);
         p.swing(InteractionHand.MAIN_HAND);
         return ok();
@@ -673,6 +781,38 @@ final class Routes {
         }
         JsonObject o = ok();
         o.addProperty("requested", n);
+        return o;
+    }
+
+    /**
+     * Shift-clicks player inventory slots into the open container (a Tom's terminal stores them). Without arguments
+     * it moves everything except the hotbar; item=<id> moves only that item, hotbar=true includes the hotbar.
+     */
+    private JsonObject storagePush(JsonObject a) {
+        LocalPlayer p = player();
+        AbstractContainerMenu menu = p.containerMenu;
+        if (menu == p.inventoryMenu) {
+            throw new ApiException("no container is open; 'use' the terminal or chest first");
+        }
+        String item = Args.s(a, "item", null);
+        boolean hotbar = Args.b(a, "hotbar", false);
+        int moved = 0;
+        for (Slot slot : menu.slots) {
+            if (!(slot.container instanceof Inventory) || slot.getItem().isEmpty()) {
+                continue;
+            }
+            int invSlot = slot.getContainerSlot();
+            if (invSlot >= 36 || (!hotbar && invSlot < 9)) {
+                continue;
+            }
+            if (item != null && !id(slot.getItem()).equals(item)) {
+                continue;
+            }
+            mc.gameMode.handleInventoryMouseClick(menu.containerId, slot.index, 0, ClickType.QUICK_MOVE, p);
+            moved++;
+        }
+        JsonObject o = ok();
+        o.addProperty("slotsMoved", moved);
         return o;
     }
 
