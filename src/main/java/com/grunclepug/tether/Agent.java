@@ -11,6 +11,8 @@ public final class Agent {
     private static volatile long lastControl;
     /** Set each client tick: a build, pillar, held keys or Baritone path is running. */
     static volatile boolean jobRunning;
+    /** The player pressed the pause key: nothing acts until the agent (or /tether resume) resumes. */
+    static volatile boolean paused;
     /** While true, Screen.hasShiftDown() reports true so shift-clicks work without a real keyboard. */
     public static volatile boolean forceShift;
 
@@ -33,6 +35,6 @@ public final class Agent {
 
     /** True while the agent is acting on the game right now; the overlay draws the red border. */
     static boolean controlling() {
-        return jobRunning || System.currentTimeMillis() - lastControl < CONTROL_MS;
+        return !paused && (jobRunning || System.currentTimeMillis() - lastControl < CONTROL_MS);
     }
 }

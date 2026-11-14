@@ -106,6 +106,15 @@ final class PillarJob {
         }
     }
 
+    /** Lets go of jump; on resume it waits to land and carries on with the same column. */
+    void pause(Minecraft mc) {
+        mc.options.keyJump.setDown(false);
+        if (phase == Phase.RISING) {
+            phase = Phase.LANDING;
+            timer = STEP_TIMEOUT;
+        }
+    }
+
     void cancel(Minecraft mc) {
         finish(mc, "stopped");
     }

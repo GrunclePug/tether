@@ -61,6 +61,12 @@ final class Routes {
         r.put("state", a -> client(this::state));
         r.put("inventory", a -> client(this::inventory));
         r.put("status", a -> client(() -> status(a)));
+        r.put("resume", a -> client(() -> {
+            Actions.resume();
+            JsonObject o = Actions.jobProgress();
+            o.addProperty("paused", false);
+            return o;
+        }));
         r.put("status/tts", a -> client(() -> statusTts(a)));
         r.put("select", ctl(a -> client(() -> select(a))));
         r.put("look", ctl(a -> client(() -> look(a))));
@@ -77,6 +83,7 @@ final class Routes {
         r.put("build", ctl(this::build));
         r.put("build/status", a -> client(() -> {
             JsonObject o = Actions.jobProgress();
+            o.addProperty("paused", Agent.paused);
             if (mc.player != null) {
                 o.add("player", pos(mc.player.blockPosition()));
             }
@@ -107,6 +114,9 @@ final class Routes {
     /** Marks a route as acting on the game, which keeps the red border up. */
     private static ApiServer.Route ctl(ApiServer.Route route) {
         return a -> {
+            if (Agent.paused) {
+                throw new ApiException("paused by the player (pause key): ask them what's up, then call resume");
+            }
             Agent.control();
             try {
                 return route.handle(a);
@@ -228,6 +238,7 @@ final class Routes {
         o.add("held", stack(p.getMainHandItem()));
         o.addProperty("screen", mc.screen == null ? null : mc.screen.getClass().getName());
         o.addProperty("windowActive", mc.isWindowActive());
+        o.addProperty("paused", Agent.paused);
         HitResult hit = mc.hitResult;
         if (hit instanceof BlockHitResult bh && hit.getType() == HitResult.Type.BLOCK) {
             JsonObject t = pos(bh.getBlockPos());

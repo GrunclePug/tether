@@ -49,6 +49,13 @@ final class Overlay {
         }
     }
 
+    /** Announces a pause (the status line shows the paused notice until resume). */
+    static void paused() {
+        if (Settings.tts) {
+            speak("Paused. Tell Claude what's up.");
+        }
+    }
+
     static String status() {
         return status;
     }
@@ -81,7 +88,9 @@ final class Overlay {
     static void renderHud(GuiGraphics g) {
         Minecraft mc = Minecraft.getInstance();
         String text = status;
-        if (text != null && (Agent.controlling() || System.currentTimeMillis() - statusTime < STATUS_MS)) {
+        if (Agent.paused) {
+            drawStatus(g, mc.font, "Paused (Del). Tell Claude what's up; it carries on when you're ready.");
+        } else if (text != null && (Agent.controlling() || System.currentTimeMillis() - statusTime < STATUS_MS)) {
             drawStatus(g, mc.font, text);
         }
         renderBorder(g);

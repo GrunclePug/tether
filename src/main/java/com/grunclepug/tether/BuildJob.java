@@ -101,6 +101,37 @@ final class BuildJob {
         return done;
     }
 
+    /**
+     * Stops acting but keeps the place in the list: a half-mined block is let go and re-mined on resume, a walk is
+     * cancelled and re-walked, a back-up nudge is dropped. Ticking stops while paused (see Actions).
+     */
+    void pause(Minecraft mc) {
+        switch (phase) {
+            case BREAKING -> {
+                mc.gameMode.stopDestroyBlock();
+                breaks = Math.max(0, breaks - 1);
+                phase = Phase.NEXT;
+            }
+            case WALKING -> {
+                BaritoneCompat.cancel();
+                walked = false;
+                phase = Phase.NEXT;
+            }
+            case NUDGE -> {
+                releaseKeys(mc);
+                phase = Phase.NEXT;
+            }
+            case COLLECT -> {
+                BaritoneCompat.cancel();
+                timer = 0;
+            }
+            default -> {
+            }
+        }
+        lastPos = null;
+        stillTicks = 0;
+    }
+
     boolean breaking() {
         return phase == Phase.BREAKING;
     }

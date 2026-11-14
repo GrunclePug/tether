@@ -79,6 +79,30 @@ public final class Actions {
         }
     }
 
+    /** The player's pause key: stop acting at once, keep every job's place, wait for resume(). */
+    static void pause(Minecraft mc) {
+        if (Agent.paused) {
+            return;
+        }
+        Agent.paused = true;
+        finishMove("paused");
+        if (job != null) {
+            job.pause(mc);
+        }
+        if (pillar != null) {
+            pillar.pause(mc);
+        }
+        if (baritone) {
+            com.grunclepug.tether.compat.BaritoneCompat.cancel();
+        }
+        Overlay.paused();
+    }
+
+    static void resume() {
+        Agent.paused = false;
+        Overlay.setStatus("Resuming where I left off");
+    }
+
     static void lookAt(LocalPlayer p, Vec3 target) {
         Vec3 d = target.subtract(p.getEyePosition());
         double horizontal = Math.sqrt(d.x * d.x + d.z * d.z);
@@ -95,6 +119,9 @@ public final class Actions {
         }
         Agent.jobRunning = job != null || pillar != null || !held.isEmpty()
                 || (baritone && com.grunclepug.tether.compat.BaritoneCompat.busy());
+        if (Agent.paused) {
+            return;
+        }
         if (!held.isEmpty()) {
             Iterator<Map.Entry<KeyMapping, Integer>> it = held.entrySet().iterator();
             while (it.hasNext()) {

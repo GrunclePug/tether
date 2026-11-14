@@ -16,6 +16,7 @@ Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON 
 * **Screens**: list widgets and menu slots with their screen coordinates, click slots, click at coordinates (with shift), type into text boxes, press keys.
 * **Tom's Simple Storage**: list everything an open terminal holds, pull whole stacks by item id, push inventory back.
 * **Baritone**: run any Baritone command (`goto`, `mine`, `follow`, ...) and wait until it finishes. Block breaking and placing during pathing are switched off by default.
+* **Pause key**: Delete (rebindable under Controls > Tether) freezes the agent on the spot without losing its place; it resumes when told to.
 * **On-screen status**: a status line above the hotbar says what the agent is doing, optionally spoken aloud, and a 2 px red border frames the game while the agent is acting, so viewers of a stream can follow along.
 * **Chat**: send chat messages and commands, read recent messages.
 * **Local only**: listens on loopback with a random port and a per-launch token stored in a user-only file.
@@ -82,6 +83,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `help` | | Lists routes and which integrations are loaded. |
 | `status` | `text`, or `clear` | Sets or clears the status line above the hotbar. |
 | `status/tts` | `enabled` | Reads or sets whether status lines are spoken. |
+| `resume` | | Lifts a pause; the running build or pillar carries on from where it stopped. |
 | `state` | | Player position, rotation, health, food, held item, crosshair target, open screen. |
 | `inventory` | | Non-empty inventory slots (0-8 hotbar, 9-35 main). |
 | `select` | `slot` 0-8 | Selects a hotbar slot. |
@@ -117,6 +119,10 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `baritone/wait` | `timeout` seconds | Waits until Baritone is idle; returns `stuck: true` (and cancels) if the player stops moving for 3 seconds. |
 
 While an agent has called the API in the last two minutes, the game doesn't open the pause menu when its window loses focus.
+
+## Pausing
+
+Press **Delete** (Controls > Tether > Pause Claude) to stop the agent at once, in the world or with a screen open. Held keys are released, Baritone's path is cancelled and a half-mined block is let go, but the running build or pillar keeps its place in the list. While paused, every route that acts on the game fails with "paused by the player", read-only routes still work, and the status line says so. The agent resumes with the `resume` route once you've talked it through; `/tether resume` in game does the same, and `/tether pause` pauses. On resume, a let-go block is mined again from the start and an interrupted walk is walked again.
 
 ## On-screen status
 

@@ -7,7 +7,12 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
+import com.mojang.blaze3d.platform.InputConstants;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
+import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents;
+import net.minecraft.client.KeyMapping;
+import org.lwjgl.glfw.GLFW;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.network.chat.Component;
@@ -22,11 +27,39 @@ public final class Tether implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         Settings.load();
+        // The player's emergency brake: Delete by default, rebindable under Controls > Tether.
+        KeyMapping pauseKey = KeyBindingHelper.registerKeyBinding(new KeyMapping(
+                "key.tether.pause", InputConstants.Type.KEYSYM, GLFW.GLFW_KEY_DELETE, "category.tether"));
+        ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            while (pauseKey.consumeClick()) {
+                Actions.pause(client);
+            }
+        });
+        // Key mappings don't fire while a screen is open (the agent may have a terminal open), so catch it there too.
+        // Only while the agent is acting, so Delete still works in text boxes the rest of the time.
+        ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> ScreenKeyboardEvents.allowKeyPress(screen)
+                .register((s, key, scancode, mods) -> {
+                    if (pauseKey.matches(key, scancode) && Agent.controlling()) {
+                        Actions.pause(client);
+                        return false;
+                    }
+                    return true;
+                }));
         HudRenderCallback.EVENT.register((graphics, delta) -> Overlay.renderHud(graphics));
         ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> ScreenEvents.afterRender(screen)
                 .register((s, graphics, mouseX, mouseY, delta) -> Overlay.renderBorder(graphics)));
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registries) -> dispatcher.register(
                 ClientCommandManager.literal("tether")
+                        .then(ClientCommandManager.literal("pause").executes(ctx -> {
+                            Actions.pause(ctx.getSource().getClient());
+                            ctx.getSource().sendFeedback(Component.literal("Tether paused"));
+                            return 1;
+                        }))
+                        .then(ClientCommandManager.literal("resume").executes(ctx -> {
+                            Actions.resume();
+                            ctx.getSource().sendFeedback(Component.literal("Tether resumed"));
+                            return 1;
+                        }))
                         .then(ClientCommandManager.literal("tts")
                                 .executes(ctx -> setTts(ctx, !Settings.tts))
                                 .then(ClientCommandManager.literal("on").executes(ctx -> setTts(ctx, true)))
