@@ -1,0 +1,37 @@
+#!/bin/sh
+# tether: call the Tether API of the running Minecraft client.
+#   tether ROUTE [key=value ...]   values that parse as JSON are sent as JSON, others as strings
+#   tether ROUTE '{"json": "body"}'
+set -eu
+
+session=${TETHER_SESSION:-${XDG_STATE_HOME:-$HOME/.local/state}/tether/session}
+if [ ! -r "$session" ]; then
+    echo "tether: no session file at $session (is the game running with the mod?)" >&2
+    exit 1
+fi
+port=$(sed -n 's/^port=//p' "$session")
+token=$(sed -n 's/^token=//p' "$session")
+
+if [ $# -lt 1 ]; then
+    echo "usage: tether ROUTE [key=value ...] | tether ROUTE '{json}'   (tether help lists routes)" >&2
+    exit 2
+fi
+route=$1
+shift
+
+if [ $# -eq 1 ] && [ "${1#\{}" != "$1" ]; then
+    body=$1
+else
+    body='{}'
+    for kv in "$@"; do
+        k=${kv%%=*}
+        v=${kv#*=}
+        if printf '%s' "$v" | jq . >/dev/null 2>&1; then
+            body=$(printf '%s' "$body" | jq -c --arg k "$k" --argjson v "$v" '.[$k] = $v')
+        else
+            body=$(printf '%s' "$body" | jq -c --arg k "$k" --arg v "$v" '.[$k] = $v')
+        fi
+    done
+fi
+
+exec curl -sS --fail-with-body -H "Authorization: Bearer $token" --data-binary "$body" "http://127.0.0.1:$port/$route"

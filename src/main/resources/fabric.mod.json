@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "tether",
+  "version": "${version}",
+  "name": "Tether",
+  "description": "Lets a local agent drive your Minecraft client through a token-protected HTTP API on localhost.",
+  "authors": ["grunclepug"],
+  "contact": {
+    "sources": "https://github.com/GrunclePug/tether"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.grunclepug.tether.Tether"]
+  },
+  "mixins": ["tether.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.1",
+    "java": ">=21"
+  },
+  "suggests": {
+    "baritone": "*",
+    "toms_storage": "*"
+  }
+}
