@@ -44,11 +44,19 @@ final class BuildJob {
     record Step(BlockPos pos, BlockState want, Map<Property<?>, Comparable<?>> props, String spec) {
     }
 
-    private enum Phase { NEXT, BREAKING, WALKING, TOGGLE, COLLECT, VERIFY, DONE }
+    private enum Phase { NEXT, BREAKING, WALKING, NUDGE, TOGGLE, COLLECT, VERIFY, DONE }
 
     private static final int BREAK_TIMEOUT = 20 * 30;
     private static final int WALK_TIMEOUT = 20 * 45;
     private static final int PICKUP_TIMEOUT = 20 * 10;
+    /** Baritone says it's moving but the player hasn't moved this far in STUCK_TICKS: stuck. */
+    private static final double STUCK_DISTANCE = 0.3;
+    private static final int STUCK_TICKS = 60;
+    /** Recoveries per job before giving up and asking for help. */
+    private static final int MAX_RECOVERIES = 2;
+    /** Walks in a row that end out of reach before the job stops. */
+    private static final int MAX_WALK_FAILS = 3;
+    private static final int NUDGE_TICKS = 12;
     private static final int MAX_BREAKS_PER_STEP = 2;
 
     private final List<Step> steps;
@@ -71,6 +79,10 @@ final class BuildJob {
     private int toggleIndex;
     /** Ticks to wait after giving Baritone a goal before trusting "not busy": it starts pathing a tick or two later. */
     private int grace;
+    private Vec3 lastPos;
+    private int stillTicks;
+    private int recoveries;
+    private int walkFails;
     private final java.util.Set<Integer> visited = new java.util.HashSet<>();
 
     BuildJob(List<Step> steps, boolean walk, boolean pickup, int perTick) {
@@ -115,6 +127,7 @@ final class BuildJob {
         o.addProperty("phase", phase.name().toLowerCase());
         o.addProperty("remaining", queue.size());
         o.addProperty("total", steps.size());
+        o.addProperty("recoveries", recoveries);
         return o;
     }
 
@@ -124,6 +137,9 @@ final class BuildJob {
         }
         if ((phase == Phase.WALKING || phase == Phase.COLLECT) && Actions.baritone) {
             BaritoneCompat.cancel();
+        }
+        if (phase == Phase.NUDGE) {
+            releaseKeys(mc);
         }
         finish(mc.level, "stopped");
     }
@@ -142,10 +158,19 @@ final class BuildJob {
                     grace--;
                     return;
                 }
-                if (!BaritoneCompat.busy() || --timer <= 0) {
-                    if (timer <= 0) {
-                        BaritoneCompat.cancel();
-                    }
+                if (!BaritoneCompat.busy()) {
+                    // Arrived, or Baritone gave up; next() checks the reach again.
+                    phase = Phase.NEXT;
+                } else if (--timer <= 0 || stuck(p)) {
+                    recover(mc, p);
+                }
+            }
+            case NUDGE -> {
+                if (--timer > 0) {
+                    mc.options.keyDown.setDown(true);
+                    mc.options.keyJump.setDown(true);
+                } else {
+                    releaseKeys(mc);
                     phase = Phase.NEXT;
                 }
             }
@@ -225,11 +250,17 @@ final class BuildJob {
                 walked = true;
                 phase = Phase.WALKING;
                 timer = WALK_TIMEOUT;
+                lastPos = null;
+                stillTicks = 0;
             } else {
                 complete("failed: out of reach");
+                if (walk && ++walkFails >= MAX_WALK_FAILS) {
+                    giveUp(mc, p, "couldn't get within reach of " + MAX_WALK_FAILS + " blocks in a row");
+                }
             }
             return;
         }
+        walkFails = 0;
         if (s.want() != null && !secondHalf) {
             Item item = s.want().getBlock().asItem();
             if (item == Items.AIR) {
@@ -327,6 +358,13 @@ final class BuildJob {
             return;
         }
         if (timer > 0) {
+            if (BaritoneCompat.busy() && stuck(p)) {
+                // Not worth a fight for a dropped item: skip it, and steer clear of whatever caught us.
+                BaritoneCompat.cancel();
+                avoidCulprit(mc, p);
+                timer = 0;
+                return;
+            }
             if (BaritoneCompat.busy() && --timer > 0) {
                 return;
             }
@@ -352,6 +390,70 @@ final class BuildJob {
         BaritoneCompat.goTo(nearest.blockPosition());
         grace = 10;
         timer = PICKUP_TIMEOUT;
+        lastPos = null;
+        stillTicks = 0;
+    }
+
+    /** True once the player has barely moved for STUCK_TICKS while Baritone thinks it's walking. */
+    private boolean stuck(LocalPlayer p) {
+        Vec3 pos = p.position();
+        if (lastPos == null || pos.distanceToSqr(lastPos) > STUCK_DISTANCE * STUCK_DISTANCE) {
+            lastPos = pos;
+            stillTicks = 0;
+            return false;
+        }
+        return ++stillTicks >= STUCK_TICKS;
+    }
+
+    /**
+     * Gets out of a stuck walk: cancels the path, tells Baritone to avoid the mod block that probably caught the
+     * player, backs up with a jump, and lets the step walk again. After MAX_RECOVERIES the job stops and says so.
+     */
+    private void recover(Minecraft mc, LocalPlayer p) {
+        BaritoneCompat.cancel();
+        String culprit = avoidCulprit(mc, p);
+        String where = p.blockPosition().toShortString();
+        if (++recoveries > MAX_RECOVERIES) {
+            giveUp(mc, p, "stuck at " + where + (culprit == null ? "" : " near " + culprit));
+            return;
+        }
+        Overlay.setStatus("Stuck at " + where + (culprit == null ? "" : " on " + culprit)
+                + ". Backing up and trying another way.");
+        walked = false;
+        phase = Phase.NUDGE;
+        timer = NUDGE_TICKS;
+    }
+
+    /**
+     * Looks for a modded, not-full block right around the player's feet (plaques, decorations: Baritone can
+     * misjudge their collision) and adds it to Baritone's blocks to avoid. Returns its id, or null.
+     */
+    private String avoidCulprit(Minecraft mc, LocalPlayer p) {
+        BlockPos feet = p.blockPosition();
+        for (BlockPos q : BlockPos.betweenClosed(feet.offset(-1, -1, -1), feet.offset(1, 1, 1))) {
+            BlockState st = mc.level.getBlockState(q);
+            if (st.isAir() || st.isCollisionShapeFullBlock(mc.level, q)) {
+                continue;
+            }
+            net.minecraft.resources.ResourceLocation id = BuiltInRegistries.BLOCK.getKey(st.getBlock());
+            if (!id.getNamespace().equals("minecraft")) {
+                BaritoneCompat.avoid(st.getBlock());
+                return id.toString();
+            }
+        }
+        return null;
+    }
+
+    private void giveUp(Minecraft mc, LocalPlayer p, String why) {
+        BaritoneCompat.cancel();
+        releaseKeys(mc);
+        Overlay.setStatus("I'm stuck (" + why + "), so I've stopped. Waiting for help.");
+        finish(mc.level, "stuck: " + why);
+    }
+
+    private static void releaseKeys(Minecraft mc) {
+        mc.options.keyDown.setDown(false);
+        mc.options.keyJump.setDown(false);
     }
 
     private static boolean isSecondHalf(BlockState want) {

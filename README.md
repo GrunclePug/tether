@@ -97,7 +97,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `place/options` | `x y z`, `block` | Every state that block could be placed as there, from where the player stands. |
 | `break` | `x y z`, `walk`, `pickup` | Mines one block; a one-step `build` to air. |
 | `build` | `blocks`, `origin`, `walk`, `pickup`, `perTick` 1-4, `wait`, `timeout` | Applies a list of `{x, y, z, block}`; see Building. |
-| `build/status` | | Progress of the running build. |
+| `build/status` | | Progress of the running build, its recovery count and the player's position. |
 | `pillar` | `height` 1-16, `block` (default dirt) | Jump-places a column under the player; returns the positions. |
 | `view` | `hideGui`, `camera` (first, back, front) | Hides the HUD or changes perspective, for screenshots. |
 | `attack` | `id` | Attacks an entity. |
@@ -114,7 +114,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `chat/log` | `since` | Messages after sequence number `since`. |
 | `baritone` | `command` | Runs a Baritone command (without the `#`). |
 | `baritone/status` | | Pathing state and goal. |
-| `baritone/wait` | `timeout` seconds | Waits until Baritone is idle. |
+| `baritone/wait` | `timeout` seconds | Waits until Baritone is idle; returns `stuck: true` (and cancels) if the player stops moving for 3 seconds. |
 
 While an agent has called the API in the last two minutes, the game doesn't open the pause menu when its window loses focus.
 
@@ -150,6 +150,7 @@ Steps run in order, one per tick by default:
 * `open=true` or `open=false` is applied by clicking the door, trapdoor or gate after placing it.
 * A block with nothing to place against is retried once at the end, after its neighbours exist. If it still can't be placed, the problem lists the states that are reachable from there; `place/options` shows the same thing ahead of time.
 * With `walk`, Baritone paths within reach of out-of-reach blocks; with `pickup`, it walks over the drops afterwards. Both need Baritone.
+* Walking is watched: if Baritone says it's moving but the player hasn't moved for 3 seconds, the job cancels the path, adds any modded partial block around the player's feet to Baritone's `blocksToAvoid`, backs up with a jump and tries again. After two recoveries, or three walks in a row that end out of reach, it stops with outcome `stuck: ...` and says so on the status line. A stuck pickup trip just skips that item.
 * Ten ticks after the last step every position is read again; anything the server rejected is reported as a mismatch.
 
 The result counts what was placed, broken or already right, and lists only the problems. For roofs above reach, `pillar` up first and clear the returned positions top-down with `build` and `"air"` when done.

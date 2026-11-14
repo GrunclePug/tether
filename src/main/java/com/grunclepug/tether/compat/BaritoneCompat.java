@@ -60,6 +60,27 @@ public final class BaritoneCompat {
                 || b.getPathingControlManager().mostRecentInControl().filter(proc -> proc.isActive()).isPresent();
     }
 
+    /**
+     * Adds a block to Baritone's blocksToAvoid through its own "set" command, so its cached movement data is
+     * refreshed too. Lasts for the session.
+     */
+    public static void avoid(net.minecraft.world.level.block.Block block) {
+        Settings s = BaritoneAPI.getSettings();
+        java.util.List<net.minecraft.world.level.block.Block> list = new java.util.ArrayList<>(s.blocksToAvoid.value);
+        if (list.contains(block)) {
+            return;
+        }
+        list.add(block);
+        StringBuilder ids = new StringBuilder();
+        for (net.minecraft.world.level.block.Block b : list) {
+            if (ids.length() > 0) {
+                ids.append(',');
+            }
+            ids.append(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b));
+        }
+        baritone().getCommandManager().execute("set blocksToAvoid " + ids);
+    }
+
     public static void cancel() {
         baritone().getPathingBehavior().cancelEverything();
     }

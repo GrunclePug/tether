@@ -75,7 +75,13 @@ final class Routes {
         r.put("place/options", ctl(a -> client(() -> placeOptions(a))));
         r.put("break", ctl(this::breakBlock));
         r.put("build", ctl(this::build));
-        r.put("build/status", a -> client(Actions::jobProgress));
+        r.put("build/status", a -> client(() -> {
+            JsonObject o = Actions.jobProgress();
+            if (mc.player != null) {
+                o.add("player", pos(mc.player.blockPosition()));
+            }
+            return o;
+        }));
         r.put("pillar", ctl(this::pillar));
         r.put("view", a -> client(() -> view(a)));
         r.put("attack", ctl(a -> client(() -> attack(a))));
@@ -901,16 +907,35 @@ final class Routes {
         return BaritoneCompat.status();
     }
 
-    /** Blocks until Baritone has nothing to do, or the timeout (seconds, default 60, max 300) passes. */
+    /**
+     * Blocks until Baritone has nothing to do, or the timeout (seconds, default 60, max 300) passes. If the player
+     * hasn't moved for 3 seconds while Baritone is busy, it cancels the path and returns with stuck=true.
+     */
     private JsonObject baritoneWait(JsonObject a) throws Exception {
         int timeout = Math.min(Args.i(a, "timeout", 60), 300);
         long end = System.currentTimeMillis() + timeout * 1000L;
         // Give a just-issued command a moment to start before treating "not busy" as finished.
         Thread.sleep(500);
+        Vec3 last = null;
+        long lastMoved = System.currentTimeMillis();
         while (true) {
             JsonObject s = client(this::baritoneStatus);
             if (!s.get("busy").getAsBoolean()) {
                 s.addProperty("finished", true);
+                return s;
+            }
+            Vec3 now = client(() -> player().position());
+            if (last == null || now.distanceTo(last) > 0.3) {
+                last = now;
+                lastMoved = System.currentTimeMillis();
+            } else if (System.currentTimeMillis() - lastMoved > 3000) {
+                client(() -> {
+                    BaritoneCompat.cancel();
+                    return null;
+                });
+                s.addProperty("finished", false);
+                s.addProperty("stuck", true);
+                s.add("at", client(() -> pos(player().blockPosition())));
                 return s;
             }
             if (System.currentTimeMillis() > end) {
