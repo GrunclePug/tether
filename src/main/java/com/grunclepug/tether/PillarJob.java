@@ -9,6 +9,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.protocol.game.ServerboundMovePlayerPacket;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
@@ -18,19 +19,22 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Builds a column under the player by jumping and placing a block beneath their feet, to reach roofs. The placed
- * positions are returned so the caller can clear the column afterwards (top down, with build and "air").
+ * Builds a column under the player by jumping and placing a block beneath their feet, to reach roofs. A step only
+ * counts once the block is there and the player has landed on it; the placed positions are returned so the caller can
+ * clear the column afterwards (top down, with build and "air").
  */
 final class PillarJob {
     private enum Phase { JUMP, RISING, LANDING, DONE }
 
     private static final int STEP_TIMEOUT = 40;
+    /** How long to wait for the player to stand on solid ground before a jump. */
+    private static final int GROUND_TIMEOUT = 60;
 
     private final Item item;
     private int remaining;
     private Phase phase = Phase.JUMP;
     private BlockPos target;
-    private int timer;
+    private int timer = GROUND_TIMEOUT;
     private final List<BlockPos> placed = new ArrayList<>();
     private final CompletableFuture<JsonObject> done = new CompletableFuture<>();
 
@@ -55,10 +59,13 @@ final class PillarJob {
                     finish(mc, "done");
                     return;
                 }
-                if (!p.onGround()) {
+                if (!p.onGround() || p.isInWater() || p.getAbilities().flying) {
+                    if (--timer <= 0) {
+                        finish(mc, "not standing on solid ground");
+                    }
                     return;
                 }
-                if (!Hotbar.hold(mc, p, item)) {
+                if (!(item instanceof BlockItem) || !Hotbar.hold(mc, p, item)) {
                     finish(mc, "ran out of blocks");
                     return;
                 }
@@ -84,33 +91,45 @@ final class PillarJob {
                 Vec3 hit = Vec3.atCenterOf(below).relative(Direction.UP, 0.5);
                 p.setXRot(90f);
                 mc.getConnection().send(new ServerboundMovePlayerPacket.Rot(p.getYRot(), 90f, p.onGround()));
-                InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND,
-                        new BlockHitResult(hit, Direction.UP, below, false));
+                // Sneak, so standing on a chest or furnace places against it instead of opening it.
+                InteractionResult r = Placement.clickWithSneak(mc, p, true, () -> mc.gameMode.useItemOn(p,
+                        InteractionHand.MAIN_HAND, new BlockHitResult(hit, Direction.UP, below, false)));
                 if (!r.consumesAction()) {
                     finish(mc, "placement rejected (" + r.name() + ")");
                     return;
                 }
                 p.swing(InteractionHand.MAIN_HAND);
-                placed.add(target);
-                remaining--;
                 phase = Phase.LANDING;
                 timer = STEP_TIMEOUT;
             }
             case LANDING -> {
-                if (p.onGround() || --timer <= 0) {
-                    phase = Phase.JUMP;
+                if (!p.onGround() && --timer > 0) {
+                    return;
                 }
+                // Count the step only if the block is really there and the player stands on it.
+                boolean there = mc.level.getBlockState(target).is(((BlockItem) item).getBlock());
+                if (!there || p.getY() < target.getY() + 0.9) {
+                    finish(mc, "the block at " + target.toShortString() + " didn't stay (server refused it?)");
+                    return;
+                }
+                placed.add(target);
+                remaining--;
+                phase = Phase.JUMP;
+                timer = GROUND_TIMEOUT;
             }
             case DONE -> {
             }
         }
     }
 
-    /** Lets go of jump; on resume it waits to land and carries on with the same column. */
+    /** Lets go of jump; on resume it waits to land, checks the last block and carries on with the same column. */
     void pause(Minecraft mc) {
         mc.options.keyJump.setDown(false);
         if (phase == Phase.RISING) {
-            phase = Phase.LANDING;
+            // The block wasn't placed yet: start this step again from the ground.
+            phase = Phase.JUMP;
+            timer = GROUND_TIMEOUT;
+        } else if (phase == Phase.LANDING) {
             timer = STEP_TIMEOUT;
         }
     }

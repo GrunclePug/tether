@@ -77,6 +77,10 @@ final class BuildJob {
     private Direction breakFace;
     private int picked;
     private int toggleIndex;
+    /** The movement key the stuck-recovery nudge holds: one that leads somewhere safe to stand. */
+    private net.minecraft.client.KeyMapping nudgeKey;
+    /** The dropped item the current pickup walk is heading for. */
+    private int collectTarget = -1;
     /** Ticks to wait after giving Baritone a goal before trusting "not busy": it starts pathing a tick or two later. */
     private int grace;
     private Vec3 lastPos;
@@ -124,6 +128,8 @@ final class BuildJob {
             case COLLECT -> {
                 BaritoneCompat.cancel();
                 timer = 0;
+                // Go back for the same item after the pause.
+                visited.remove(collectTarget);
             }
             default -> {
             }
@@ -198,7 +204,7 @@ final class BuildJob {
             }
             case NUDGE -> {
                 if (--timer > 0) {
-                    mc.options.keyDown.setDown(true);
+                    nudgeKey.setDown(true);
                     mc.options.keyJump.setDown(true);
                 } else {
                     releaseKeys(mc);
@@ -267,7 +273,11 @@ final class BuildJob {
                     complete("failed: out of reach to open/close");
                     return;
                 }
-                Placement.toggle(mc, p, s.pos());
+                if (!Placement.toggle(mc, p, s.pos())) {
+                    complete("failed: " + BuiltInRegistries.BLOCK.getKey(here.getBlock())
+                            + " can't be opened or shut by hand");
+                    return;
+                }
                 complete("placed");
                 return;
             }
@@ -352,7 +362,11 @@ final class BuildJob {
             complete("failed: block keeps coming back");
             return;
         }
-        Hotbar.bestTool(p, here);
+        if (!Hotbar.bestTool(p, here)) {
+            complete("failed: no tool in the hotbar can harvest " + BuiltInRegistries.BLOCK.getKey(here.getBlock())
+                    + " (mining it would destroy it with no drop)");
+            return;
+        }
         Vec3 center = Vec3.atCenterOf(s.pos());
         breakFace = Direction.getNearest(p.getEyePosition().subtract(center));
         Actions.lookAt(p, center.relative(breakFace, 0.5));
@@ -418,6 +432,7 @@ final class BuildJob {
         }
         picked++;
         visited.add(nearest.getId());
+        collectTarget = nearest.getId();
         BaritoneCompat.goTo(nearest.blockPosition());
         grace = 10;
         timer = PICKUP_TIMEOUT;
@@ -448,11 +463,52 @@ final class BuildJob {
             giveUp(mc, p, "stuck at " + where + (culprit == null ? "" : " near " + culprit));
             return;
         }
+        nudgeKey = safeNudge(mc, p);
+        if (nudgeKey == null) {
+            giveUp(mc, p, "stuck at " + where + " with no safe direction to back away");
+            return;
+        }
         Overlay.setStatus("Stuck at " + where + (culprit == null ? "" : " on " + culprit)
                 + ". Backing up and trying another way.");
         walked = false;
         phase = Phase.NUDGE;
         timer = NUDGE_TICKS;
+    }
+
+    /**
+     * Picks a direction to step away in (back, right, left, then forward) where the player lands on something solid:
+     * either a floor one step over, or a block to hop onto with headroom. Never toward a drop or lava. Null if none.
+     */
+    private static net.minecraft.client.KeyMapping safeNudge(Minecraft mc, LocalPlayer p) {
+        Direction facing = p.getDirection();
+        Direction[] dirs = {facing.getOpposite(), facing.getClockWise(), facing.getCounterClockWise(), facing};
+        net.minecraft.client.KeyMapping[] keys = {mc.options.keyDown, mc.options.keyRight, mc.options.keyLeft,
+                mc.options.keyUp};
+        BlockPos feet = p.blockPosition();
+        for (int i = 0; i < dirs.length; i++) {
+            BlockPos to = feet.relative(dirs[i]);
+            if (dangerous(mc, to) || dangerous(mc, to.below())) {
+                continue;
+            }
+            boolean stepOver = passable(mc, to) && passable(mc, to.above()) && !passable(mc, to.below());
+            boolean hopUp = !passable(mc, to) && passable(mc, to.above()) && passable(mc, to.above(2));
+            if (stepOver || hopUp) {
+                return keys[i];
+            }
+        }
+        return null;
+    }
+
+    private static boolean passable(Minecraft mc, BlockPos q) {
+        return mc.level.getBlockState(q).getCollisionShape(mc.level, q).isEmpty();
+    }
+
+    private static boolean dangerous(Minecraft mc, BlockPos q) {
+        BlockState st = mc.level.getBlockState(q);
+        return st.getFluidState().is(net.minecraft.tags.FluidTags.LAVA)
+                || st.is(net.minecraft.tags.BlockTags.FIRE) || st.is(net.minecraft.world.level.block.Blocks.MAGMA_BLOCK)
+                || st.is(net.minecraft.world.level.block.Blocks.CACTUS)
+                || st.is(net.minecraft.world.level.block.Blocks.SWEET_BERRY_BUSH);
     }
 
     /**
@@ -483,7 +539,10 @@ final class BuildJob {
     }
 
     private static void releaseKeys(Minecraft mc) {
+        mc.options.keyUp.setDown(false);
         mc.options.keyDown.setDown(false);
+        mc.options.keyLeft.setDown(false);
+        mc.options.keyRight.setDown(false);
         mc.options.keyJump.setDown(false);
     }
 
@@ -517,10 +576,13 @@ final class BuildJob {
             String r = results[i];
             if (r == null) {
                 r = "not reached";
-            } else if (level != null && (r.equals("placed") || r.equals("broken"))) {
+            } else if (level != null && (r.equals("placed") || r.equals("broken") || r.equals("already"))) {
+                // Everything is checked again at the end, including blocks that were right to begin with: a later
+                // step can knock off a torch or a door whose support it mined.
                 BlockState actual = level.getBlockState(s.pos());
                 if (!Placement.matches(actual, s.want(), s.props()) || openDiffers(actual, s)) {
-                    r = "mismatch: got " + BlockStateParser.serialize(actual);
+                    r = (r.equals("already") ? "changed later: now " : "mismatch: got ")
+                            + BlockStateParser.serialize(actual);
                 }
             }
             switch (r) {

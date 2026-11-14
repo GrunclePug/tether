@@ -120,20 +120,45 @@ final class Routes {
     private static ApiServer.Route ctl(ApiServer.Route route) {
         return a -> {
             if (Agent.paused) {
-                throw new ApiException("paused by the player (pause key): ask them what's up, then call resume");
+                throw new ApiException(PAUSED);
             }
             Agent.control();
+            CONTROL.set(true);
             try {
                 return route.handle(a);
             } finally {
+                CONTROL.set(false);
                 Agent.control();
             }
         };
     }
 
+    private static final String PAUSED = "paused by the player (pause key): ask them what's up, then call resume";
+    /** Set on an HTTP thread while it runs a control route, so its client-thread work re-checks the pause. */
+    private static final ThreadLocal<Boolean> CONTROL = ThreadLocal.withInitial(() -> false);
+    private static final long CLIENT_TIMEOUT_MS = 10_000;
+
+    /**
+     * Runs work on the client thread and waits for it. Control work checks the pause again right before it runs, so
+     * a pause pressed while it was queued wins; work still queued when the wait gives up is dropped, never run late.
+     */
     private <T> T client(Supplier<T> task) throws Exception {
+        boolean control = CONTROL.get();
+        long deadline = System.currentTimeMillis() + CLIENT_TIMEOUT_MS;
+        CompletableFuture<T> f = mc.submit(() -> {
+            if (System.currentTimeMillis() > deadline) {
+                throw new ApiException("the game was busy for too long; the request was dropped, not run");
+            }
+            if (control && Agent.paused) {
+                throw new ApiException(PAUSED);
+            }
+            return task.get();
+        });
         try {
-            return mc.submit(task).get(10, TimeUnit.SECONDS);
+            return f.get(CLIENT_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (java.util.concurrent.TimeoutException e) {
+            f.cancel(false);
+            throw new ApiException("the game didn't respond in time; the request was dropped, not run");
         } catch (ExecutionException e) {
             if (e.getCause() instanceof Exception ex) {
                 throw ex;
@@ -315,7 +340,7 @@ final class Routes {
             for (var k : a.getAsJsonArray("keys")) {
                 keys.put(key(k.getAsString()), ticks);
             }
-            return Actions.hold(keys);
+            return Actions.hold(mc, keys);
         });
         return await(done, ticks / 20 + 10);
     }
@@ -566,10 +591,20 @@ final class Routes {
      */
     private JsonObject region(JsonObject a) {
         player();
+        for (String k : new String[]{"x1", "x2", "z1", "z2"}) {
+            if (Math.abs((long) Args.i(a, k)) > 30_000_000L) {
+                throw new ApiException(k + " is outside the world");
+            }
+        }
+        for (String k : new String[]{"y1", "y2"}) {
+            if (mc.level.isOutsideBuildHeight(Args.i(a, k))) {
+                throw new ApiException(k + " is outside the build height");
+            }
+        }
         int x1 = Math.min(Args.i(a, "x1"), Args.i(a, "x2")), x2 = Math.max(Args.i(a, "x1"), Args.i(a, "x2"));
         int y1 = Math.min(Args.i(a, "y1"), Args.i(a, "y2")), y2 = Math.max(Args.i(a, "y1"), Args.i(a, "y2"));
         int z1 = Math.min(Args.i(a, "z1"), Args.i(a, "z2")), z2 = Math.max(Args.i(a, "z1"), Args.i(a, "z2"));
-        long volume = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+        long volume = ((long) x2 - x1 + 1) * ((long) y2 - y1 + 1) * ((long) z2 - z1 + 1);
         if (volume > 65536) {
             throw new ApiException("region too large (" + volume + " blocks, max 65536)");
         }
@@ -914,6 +949,8 @@ final class Routes {
     private JsonObject baritoneRun(JsonObject a) {
         requireBaritone();
         player();
+        // Baritone moving the player while a build or held keys run would fight over it.
+        Actions.claim(mc);
         return BaritoneCompat.run(Args.s(a, "command"));
     }
 

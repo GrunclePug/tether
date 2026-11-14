@@ -122,9 +122,9 @@ final class Placement {
         ClientLevel level = mc.level;
         float yaw0 = p.getYRot();
         float pitch0 = p.getXRot();
-        boolean shift0 = p.isShiftKeyDown();
         boolean found = false;
-        p.setShiftKeyDown(true);
+        // Plan as the click will be made: sneaking, as the client and the item see it.
+        boolean shift0 = setSneak(p, true);
         try {
             for (Direction side : Direction.values()) {
                 BlockPos against = pos.relative(side);
@@ -154,8 +154,58 @@ final class Placement {
         } finally {
             p.setYRot(yaw0);
             p.setXRot(pitch0);
-            p.setShiftKeyDown(shift0);
+            setSneak(p, shift0);
         }
+    }
+
+    /**
+     * Sets whether the player counts as sneaking for client-side checks: LocalPlayer.isShiftKeyDown() reads the input
+     * state, not the entity flag. Returns the previous value.
+     */
+    private static boolean setSneak(LocalPlayer p, boolean sneak) {
+        boolean was = p.isShiftKeyDown();
+        if (p.input != null) {
+            p.input.shiftKeyDown = sneak;
+        }
+        p.setShiftKeyDown(sneak);
+        return was;
+    }
+
+    /**
+     * Runs a click with the player sneaking or not, both as the client checks it and as the server sees it (shift
+     * packets around the click), then puts everything back.
+     */
+    static InteractionResult clickWithSneak(Minecraft mc, LocalPlayer p, boolean sneak,
+                                            java.util.function.Supplier<InteractionResult> click) {
+        boolean was = setSneak(p, sneak);
+        boolean change = was != sneak;
+        if (change) {
+            mc.getConnection().send(new ServerboundPlayerCommandPacket(p, sneak
+                    ? ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
+                    : ServerboundPlayerCommandPacket.Action.RELEASE_SHIFT_KEY));
+        }
+        try {
+            return click.get();
+        } finally {
+            setSneak(p, was);
+            if (change) {
+                mc.getConnection().send(new ServerboundPlayerCommandPacket(p, was
+                        ? ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY
+                        : ServerboundPlayerCommandPacket.Action.RELEASE_SHIFT_KEY));
+            }
+        }
+    }
+
+    /** Doors, trapdoors and gates a hand can open: not iron ones, which need redstone. */
+    static boolean openableByHand(BlockState s) {
+        net.minecraft.world.level.block.Block b = s.getBlock();
+        if (b instanceof net.minecraft.world.level.block.DoorBlock door) {
+            return door.type().canOpenByHand();
+        }
+        if (b instanceof net.minecraft.world.level.block.TrapDoorBlock trapdoor) {
+            return ((com.grunclepug.tether.mixin.TrapDoorBlockAccessor) trapdoor).tether$type().canOpenByHand();
+        }
+        return b instanceof net.minecraft.world.level.block.FenceGateBlock;
     }
 
     private static java.util.List<Plan> candidates(LocalPlayer p, BlockItem item, ItemStack stack, BlockPos against,
@@ -197,17 +247,25 @@ final class Placement {
         return Math.abs(Mth.wrapDegrees(c.yaw() - natYaw)) + Math.abs(c.pitch() - pitch0) * 0.5;
     }
 
-    /** Clicks a block without sneaking, to open or shut a door, trapdoor or gate. */
-    static void toggle(Minecraft mc, LocalPlayer p, BlockPos pos) {
+    /**
+     * Opens or shuts a door, trapdoor or gate by clicking it without sneaking. Refuses (returns false) for anything a
+     * hand can't open, where the click would fall through to placing the held item instead.
+     */
+    static boolean toggle(Minecraft mc, LocalPlayer p, BlockPos pos) {
+        if (!openableByHand(mc.level.getBlockState(pos))) {
+            return false;
+        }
         Vec3 center = Vec3.atCenterOf(pos);
         Direction face = Direction.getNearest(p.getEyePosition().subtract(center));
         Vec3 hit = center.relative(face, 0.5);
         Actions.lookAt(p, hit);
         mc.getConnection().send(new ServerboundMovePlayerPacket.Rot(p.getYRot(), p.getXRot(), p.onGround()));
-        InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, pos, false));
+        InteractionResult r = clickWithSneak(mc, p, false,
+                () -> mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND, new BlockHitResult(hit, face, pos, false)));
         if (r.shouldSwing()) {
             p.swing(InteractionHand.MAIN_HAND);
         }
+        return true;
     }
 
     /** Turns to the plan's rotation, tells the server, and clicks while sneaking. */
@@ -216,17 +274,8 @@ final class Placement {
         p.setXRot(plan.pitch());
         p.setYHeadRot(plan.yaw());
         mc.getConnection().send(new ServerboundMovePlayerPacket.Rot(plan.yaw(), plan.pitch(), p.onGround()));
-        boolean wasSneaking = p.isShiftKeyDown();
-        if (!wasSneaking) {
-            p.setShiftKeyDown(true);
-            mc.getConnection().send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.PRESS_SHIFT_KEY));
-        }
-        InteractionResult r = mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND,
-                new BlockHitResult(plan.hit(), plan.face(), plan.against(), false));
-        if (!wasSneaking) {
-            p.setShiftKeyDown(false);
-            mc.getConnection().send(new ServerboundPlayerCommandPacket(p, ServerboundPlayerCommandPacket.Action.RELEASE_SHIFT_KEY));
-        }
+        InteractionResult r = clickWithSneak(mc, p, true, () -> mc.gameMode.useItemOn(p, InteractionHand.MAIN_HAND,
+                new BlockHitResult(plan.hit(), plan.face(), plan.against(), false)));
         if (r.shouldSwing()) {
             p.swing(InteractionHand.MAIN_HAND);
         }

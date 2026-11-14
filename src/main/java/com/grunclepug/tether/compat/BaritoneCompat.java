@@ -61,8 +61,7 @@ public final class BaritoneCompat {
     }
 
     /**
-     * Adds a block to Baritone's blocksToAvoid through its own "set" command, so its cached movement data is
-     * refreshed too. Lasts for the session.
+     * Adds a block to Baritone's blocksToAvoid for this session (not saved).
      */
     public static void avoid(net.minecraft.world.level.block.Block block) {
         Settings s = BaritoneAPI.getSettings();
@@ -71,14 +70,9 @@ public final class BaritoneCompat {
             return;
         }
         list.add(block);
-        StringBuilder ids = new StringBuilder();
-        for (net.minecraft.world.level.block.Block b : list) {
-            if (ids.length() > 0) {
-                ids.append(',');
-            }
-            ids.append(net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(b));
-        }
-        baritone().getCommandManager().execute("set blocksToAvoid " + ids);
+        // Set directly, not with Baritone's "set" command: that saves every setting to Baritone's config file,
+        // which would make this and the safe defaults permanent. Baritone reads the list afresh for each path.
+        s.blocksToAvoid.value = list;
     }
 
     public static void cancel() {
@@ -90,8 +84,12 @@ public final class BaritoneCompat {
             return;
         }
         Settings s = BaritoneAPI.getSettings();
+        // Everything that lets pathing change the world or the inventory, for this session only (not saved).
         s.allowBreak.value = false;
         s.allowPlace.value = false;
+        s.allowParkourPlace.value = false;
+        s.allowWaterBucketFall.value = false;
+        s.allowInventory.value = false;
         defaultsApplied = true;
     }
 

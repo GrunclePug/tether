@@ -57,8 +57,10 @@ final class ApiServer {
         server.start();
         Files.createDirectories(sessionFile.getParent());
         Path tmp = sessionFile.resolveSibling(sessionFile.getFileName() + ".tmp");
+        // Created owner-only before the token goes in, so it is never readable by anyone else, not even briefly.
+        Files.deleteIfExists(tmp);
+        Files.createFile(tmp, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
         Files.writeString(tmp, "port=" + server.getAddress().getPort() + "\ntoken=" + token + "\n");
-        Files.setPosixFilePermissions(tmp, PosixFilePermissions.fromString("rw-------"));
         Files.move(tmp, sessionFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
                 java.nio.file.StandardCopyOption.ATOMIC_MOVE);
         Tether.LOG.info("Tether API listening on 127.0.0.1:{} (session file {})",

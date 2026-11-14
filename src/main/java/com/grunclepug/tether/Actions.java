@@ -24,6 +24,12 @@ public final class Actions {
     private static CompletableFuture<JsonObject> moveDone;
     private static BuildJob job;
     private static PillarJob pillar;
+    /** The world and player the current work started in; a dimension change, death or reconnect stops it. */
+    private static Object boundLevel;
+    private static Object boundPlayer;
+    /** The outcome of the last finished build or pillar, so polling callers still get it. */
+    private static JsonObject lastResult;
+    private static int jobCounter;
 
     private Actions() {
     }
@@ -33,38 +39,63 @@ public final class Actions {
         return job != null && job.breaking();
     }
 
-    static CompletableFuture<JsonObject> hold(Map<KeyMapping, Integer> keys) {
-        finishMove("replaced");
+    /**
+     * Takes sole control of the player for new work: stops held keys, any job or pillar, and Baritone, and remembers
+     * which world and player the work belongs to.
+     */
+    static void claim(Minecraft mc) {
+        stopAll(mc);
+        if (baritone) {
+            com.grunclepug.tether.compat.BaritoneCompat.cancel();
+        }
+        boundLevel = mc.level;
+        boundPlayer = mc.player;
+    }
+
+    static CompletableFuture<JsonObject> hold(Minecraft mc, Map<KeyMapping, Integer> keys) {
+        claim(mc);
         held.putAll(keys);
         moveDone = new CompletableFuture<>();
         return moveDone;
     }
 
     static CompletableFuture<JsonObject> startJob(Minecraft mc, BuildJob next) {
-        if (job != null) {
-            job.cancel(mc);
-        }
-        if (pillar != null) {
-            pillar.cancel(mc);
-            pillar = null;
-        }
+        claim(mc);
         job = next;
+        lastResult = null;
+        int id = ++jobCounter;
+        next.future().thenAccept(r -> {
+            r.addProperty("job", id);
+            lastResult = r;
+        });
         return next.future();
     }
 
     static CompletableFuture<JsonObject> startPillar(Minecraft mc, PillarJob next) {
-        stopAll(mc);
+        claim(mc);
         pillar = next;
+        lastResult = null;
+        int id = ++jobCounter;
+        next.future().thenAccept(r -> {
+            r.addProperty("job", id);
+            lastResult = r;
+        });
         return next.future();
     }
 
     static JsonObject jobProgress() {
         if (job == null) {
             JsonObject o = new JsonObject();
-            o.addProperty("phase", "idle");
+            o.addProperty("phase", pillar != null ? "pillar" : "idle");
+            o.addProperty("job", jobCounter);
+            if (lastResult != null) {
+                o.add("last", lastResult);
+            }
             return o;
         }
-        return job.progress();
+        JsonObject o = job.progress();
+        o.addProperty("job", jobCounter);
+        return o;
     }
 
     static void stopAll(Minecraft mc) {
@@ -116,6 +147,16 @@ public final class Actions {
             stopAll(mc);
             Agent.jobRunning = false;
             return;
+        }
+        boolean working = job != null || pillar != null || !held.isEmpty();
+        if (working && (mc.level != boundLevel || mc.player != boundPlayer || mc.player.isDeadOrDying())) {
+            // Coordinates mean nothing in another dimension, and a respawned player is somewhere else.
+            String why = mc.player.isDeadOrDying() ? "the player died" : "the world or dimension changed";
+            stopAll(mc);
+            if (baritone) {
+                com.grunclepug.tether.compat.BaritoneCompat.cancel();
+            }
+            Overlay.setStatus("Stopped: " + why + ".");
         }
         Agent.jobRunning = job != null || pillar != null || !held.isEmpty()
                 || (baritone && com.grunclepug.tether.compat.BaritoneCompat.busy());

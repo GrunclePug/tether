@@ -15,7 +15,7 @@ Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON 
 * **Actions**: look at a point, hold movement keys for a number of ticks, use or attack.
 * **Screens**: list widgets and menu slots with their screen coordinates, click slots, click at coordinates (with shift), type into text boxes, press keys.
 * **Tom's Simple Storage**: list everything an open terminal holds, pull whole stacks by item id, push inventory back.
-* **Baritone**: run any Baritone command (`goto`, `mine`, `follow`, ...) and wait until it finishes. Block breaking and placing during pathing are switched off by default.
+* **Baritone**: run any Baritone command (`goto`, `mine`, `follow`, ...) and wait until it finishes. Breaking, placing, parkour placing, water-bucket falls and inventory shuffling during pathing are switched off for the session, without saving them to Baritone's settings.
 * **Pause key**: Delete (rebindable under Controls > Tether) freezes the agent on the spot without losing its place; it resumes when told to.
 * **On-screen status**: a status line above the hotbar says what the agent is doing, optionally spoken aloud, and a 2 px red border frames the game while the agent is acting, so viewers of a stream can follow along.
 * **Chat**: send chat messages and commands, read recent messages.
@@ -100,7 +100,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `place/options` | `x y z`, `block` | Every state that block could be placed as there, from where the player stands. |
 | `break` | `x y z`, `walk`, `pickup` | Mines one block; a one-step `build` to air. |
 | `build` | `blocks`, `origin`, `walk`, `pickup`, `perTick` 1-4, `wait`, `timeout` | Applies a list of `{x, y, z, block}`; see Building. |
-| `build/status` | | Progress of the running build, its recovery count and the player's position. |
+| `build/status` | | Progress of the running build, its recovery count and the player's position; once idle, the last build or pillar result under `last`. |
 | `pillar` | `height` 1-16, `block` (default dirt) | Jump-places a column under the player; returns the positions. |
 | `view` | `hideGui`, `camera` (first, back, front) | Hides the HUD or changes perspective, for screenshots. |
 | `attack` | `id` | Attacks an entity. |
@@ -171,13 +171,14 @@ Press **Delete** (Controls > Tether > Pause Claude) to stop the agent at once, i
 Steps run in order, one per tick by default:
 
 * A position that already matches is left alone. Only the properties you name are compared, and properties placement can't choose (connections, stair shape, waterlogging, power, `open`) are ignored, so a state copied from `region` matches what placing it produces.
-* A wrong block is mined with the fastest hotbar tool, then the right item is moved into the hotbar and placed.
+* A wrong block is mined with the fastest hotbar tool that still gets its drop; a block that needs a tool the hotbar doesn't have (stone, ores) fails instead of being destroyed for nothing. Then the right item is moved into the hotbar and placed.
 * The placement planner asks the item itself (the same code the server runs) what each clickable face, hit height and facing would produce, and uses the option that matches with the least head movement. Placement always sneaks, so clicking a chest or terminal places against it.
-* `open=true` or `open=false` is applied by clicking the door, trapdoor or gate after placing it.
+* `open=true` or `open=false` is applied by clicking the door, trapdoor or gate after placing it; iron ones, which only redstone opens, fail instead.
 * A block with nothing to place against is retried once at the end, after its neighbours exist. If it still can't be placed, the problem lists the states that are reachable from there; `place/options` shows the same thing ahead of time.
 * With `walk`, Baritone paths within reach of out-of-reach blocks; with `pickup`, it walks over the drops afterwards. Both need Baritone.
 * Walking is watched: if Baritone says it's moving but the player hasn't moved for 3 seconds, the job cancels the path, adds any modded partial block around the player's feet to Baritone's `blocksToAvoid`, backs up with a jump and tries again. After two recoveries, or three walks in a row that end out of reach, it stops with outcome `stuck: ...` and says so on the status line. A stuck pickup trip just skips that item.
-* Ten ticks after the last step every position is read again; anything the server rejected is reported as a mismatch.
+* Ten ticks after the last step every position is read again, including ones that were right to begin with; anything the server rejected, or a later step knocked off, is reported.
+* A build, pillar or held movement belongs to the world and player it started with: a dimension change, death or reconnect stops it. Starting any of them, or a Baritone command, stops whatever else was moving the player.
 
 The result counts what was placed, broken or already right, and lists only the problems. For roofs above reach, `pillar` up first and clear the returned positions top-down with `build` and `"air"` when done.
 

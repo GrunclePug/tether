@@ -19,6 +19,11 @@ final class Hotbar {
      * creative mode. Returns false if the player doesn't have it.
      */
     static boolean hold(Minecraft mc, LocalPlayer p, Item item) {
+        // Swaps go through the player's own inventory menu; with a container open the server would ignore them.
+        if (p.containerMenu != p.inventoryMenu || mc.screen != null) {
+            p.closeContainer();
+            mc.setScreen(null);
+        }
         Inventory inv = p.getInventory();
         for (int i = 0; i < 9; i++) {
             if (inv.items.get(i).is(item)) {
@@ -32,7 +37,7 @@ final class Hotbar {
                 // In the inventory menu, slot indices 9-35 are the main inventory; SWAP's button is the hotbar slot.
                 mc.gameMode.handleInventoryMouseClick(p.inventoryMenu.containerId, i, target, ClickType.SWAP, p);
                 inv.selected = target;
-                return true;
+                return inv.items.get(target).is(item);
             }
         }
         if (mc.gameMode.hasInfiniteItems()) {
@@ -46,13 +51,22 @@ final class Hotbar {
         return false;
     }
 
-    /** Selects the hotbar item that mines this block fastest, if any beats the bare hand. */
-    static void bestTool(LocalPlayer p, BlockState state) {
+    /**
+     * Selects the hotbar item that mines this block fastest without losing its drop. For blocks that need the right
+     * tool to drop (stone, ores), only such tools count, and false means there's none: mining would destroy the block
+     * for nothing. Other blocks fall back to the bare hand.
+     */
+    static boolean bestTool(LocalPlayer p, BlockState state) {
         Inventory inv = p.getInventory();
+        boolean needsTool = state.requiresCorrectToolForDrops();
         int best = -1;
-        float bestSpeed = 1.0f;
+        float bestSpeed = needsTool ? 0f : 1.0f;
         for (int i = 0; i < 9; i++) {
-            float speed = inv.items.get(i).getDestroySpeed(state);
+            ItemStack stack = inv.items.get(i);
+            if (needsTool && !stack.isCorrectToolForDrops(state)) {
+                continue;
+            }
+            float speed = stack.getDestroySpeed(state);
             if (speed > bestSpeed) {
                 best = i;
                 bestSpeed = speed;
@@ -60,7 +74,19 @@ final class Hotbar {
         }
         if (best >= 0) {
             inv.selected = best;
+            return true;
         }
+        if (needsTool) {
+            return false;
+        }
+        // No tool helps: use an empty slot if there is one, so a tool isn't worn down for nothing.
+        for (int i = 0; i < 9; i++) {
+            if (inv.items.get(i).isEmpty()) {
+                inv.selected = i;
+                break;
+            }
+        }
+        return true;
     }
 
     /** A hotbar slot to load a building block into: empty first, then one holding blocks, never a tool if avoidable. */

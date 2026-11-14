@@ -8,7 +8,8 @@
     "BlockItemInvoker",
     "GameNarratorAccessor",
     "MinecraftMixin",
-    "ScreenMixin"
+    "ScreenMixin",
+    "TrapDoorBlockAccessor"
   ],
   "injectors": {
     "defaultRequire": 1
