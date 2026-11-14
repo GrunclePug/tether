@@ -60,41 +60,55 @@ final class Routes {
         r.put("help", a -> help(r));
         r.put("state", a -> client(this::state));
         r.put("inventory", a -> client(this::inventory));
-        r.put("select", a -> client(() -> select(a)));
-        r.put("look", a -> client(() -> look(a)));
-        r.put("move", this::move);
+        r.put("status", a -> client(() -> status(a)));
+        r.put("status/tts", a -> client(() -> statusTts(a)));
+        r.put("select", ctl(a -> client(() -> select(a))));
+        r.put("look", ctl(a -> client(() -> look(a))));
+        r.put("move", ctl(this::move));
         r.put("stop", a -> client(this::stop));
         r.put("block", a -> client(() -> block(a)));
         r.put("blocks", a -> client(() -> blocks(a)));
         r.put("entities", a -> client(() -> entities(a)));
-        r.put("use", a -> client(() -> use(a)));
+        r.put("use", ctl(a -> client(() -> use(a))));
         r.put("region", a -> client(() -> region(a)));
-        r.put("place", this::place);
-        r.put("place/options", a -> client(() -> placeOptions(a)));
-        r.put("break", this::breakBlock);
-        r.put("build", this::build);
+        r.put("place", ctl(this::place));
+        r.put("place/options", ctl(a -> client(() -> placeOptions(a))));
+        r.put("break", ctl(this::breakBlock));
+        r.put("build", ctl(this::build));
         r.put("build/status", a -> client(Actions::jobProgress));
-        r.put("pillar", this::pillar);
+        r.put("pillar", ctl(this::pillar));
         r.put("view", a -> client(() -> view(a)));
-        r.put("attack", a -> client(() -> attack(a)));
+        r.put("attack", ctl(a -> client(() -> attack(a))));
         r.put("screen", a -> client(this::screen));
-        r.put("screen/click", a -> client(() -> screenClick(a)));
-        r.put("screen/mouse", a -> client(() -> screenMouse(a)));
-        r.put("screen/type", a -> client(() -> screenType(a)));
-        r.put("screen/key", a -> client(() -> screenKey(a)));
-        r.put("screen/close", a -> client(this::screenClose));
+        r.put("screen/click", ctl(a -> client(() -> screenClick(a))));
+        r.put("screen/mouse", ctl(a -> client(() -> screenMouse(a))));
+        r.put("screen/type", ctl(a -> client(() -> screenType(a))));
+        r.put("screen/key", ctl(a -> client(() -> screenKey(a))));
+        r.put("screen/close", ctl(a -> client(this::screenClose)));
         r.put("storage", a -> client(() -> storage(a)));
-        r.put("storage/pull", a -> client(() -> storagePull(a)));
-        r.put("storage/push", a -> client(() -> storagePush(a)));
-        r.put("chat", a -> client(() -> sendChat(a)));
+        r.put("storage/pull", ctl(a -> client(() -> storagePull(a))));
+        r.put("storage/push", ctl(a -> client(() -> storagePush(a))));
+        r.put("chat", ctl(a -> client(() -> sendChat(a))));
         r.put("chat/log", a -> chatLog(a));
-        r.put("baritone", a -> client(() -> baritoneRun(a)));
+        r.put("baritone", ctl(a -> client(() -> baritoneRun(a))));
         r.put("baritone/status", a -> client(() -> baritoneStatus()));
         r.put("baritone/wait", this::baritoneWait);
         return r;
     }
 
     // --- plumbing ---
+
+    /** Marks a route as acting on the game, which keeps the red border up. */
+    private static ApiServer.Route ctl(ApiServer.Route route) {
+        return a -> {
+            Agent.control();
+            try {
+                return route.handle(a);
+            } finally {
+                Agent.control();
+            }
+        };
+    }
 
     private <T> T client(Supplier<T> task) throws Exception {
         try {
@@ -155,6 +169,37 @@ final class Routes {
         o.add("routes", names);
         o.addProperty("baritone", baritone);
         o.addProperty("toms_storage", toms);
+        return o;
+    }
+
+    // --- overlay ---
+
+    /** Sets the status line above the hotbar ("text"), or clears it ("clear": true). */
+    private JsonObject status(JsonObject a) {
+        if (Args.b(a, "clear", false)) {
+            Overlay.setStatus(null);
+        } else if (Args.has(a, "text")) {
+            Overlay.setStatus(Args.s(a, "text"));
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("text", Overlay.status());
+        o.addProperty("tts", Settings.tts);
+        o.addProperty("controlling", Agent.controlling());
+        return o;
+    }
+
+    /** Reads or sets ("enabled") whether status lines are spoken. */
+    private JsonObject statusTts(JsonObject a) {
+        if (Args.has(a, "enabled")) {
+            Settings.tts = Args.b(a, "enabled", false);
+            Settings.save();
+            if (!Settings.tts) {
+                Overlay.stopSpeaking();
+            }
+        }
+        JsonObject o = new JsonObject();
+        o.addProperty("tts", Settings.tts);
+        o.addProperty("available", Overlay.ttsAvailable());
         return o;
     }
 

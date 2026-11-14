@@ -16,6 +16,7 @@ Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON 
 * **Screens**: list widgets and menu slots with their screen coordinates, click slots, click at coordinates (with shift), type into text boxes, press keys.
 * **Tom's Simple Storage**: list everything an open terminal holds, pull whole stacks by item id, push inventory back.
 * **Baritone**: run any Baritone command (`goto`, `mine`, `follow`, ...) and wait until it finishes. Block breaking and placing during pathing are switched off by default.
+* **On-screen status**: a status line above the hotbar says what the agent is doing, optionally spoken aloud, and a 2 px red border frames the game while the agent is acting, so viewers of a stream can follow along.
 * **Chat**: send chat messages and commands, read recent messages.
 * **Local only**: listens on loopback with a random port and a per-launch token stored in a user-only file.
 * **No bundled dependencies**: uses the JDK's HTTP server and Minecraft's bundled Gson; Baritone and Tom's Simple Storage are optional.
@@ -28,6 +29,7 @@ Tether is a client-side Fabric mod for Minecraft 1.21.1 that opens a small JSON 
 * Minecraft 1.21.1 with Fabric Loader 0.16+ and Fabric API
 * Optional: [Baritone](https://github.com/cabaletta/baritone/releases) 1.11.3 (`baritone-api-fabric-1.11.3.jar`), Tom's Simple Storage 2.x
 * For the CLI: `sh`, `curl`, `jq`
+* For spoken status lines: the `flite` speech library (Minecraft's narrator uses it on Linux)
 
 ### Build
 
@@ -46,6 +48,7 @@ Start the game and join a world. The mod writes its port and token to the sessio
 
 ```sh
 tether help                                   # list routes
+tether status text='Pulling planks from storage'   # status line above the hotbar
 tether state                                  # where am I, what am I looking at
 tether look x=100.5 y=65 z=-20.5
 tether move keys='["forward","sprint"]' ticks=40
@@ -77,6 +80,8 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | Route | Arguments | Does |
 | --- | --- | --- |
 | `help` | | Lists routes and which integrations are loaded. |
+| `status` | `text`, or `clear` | Sets or clears the status line above the hotbar. |
+| `status/tts` | `enabled` | Reads or sets whether status lines are spoken. |
 | `state` | | Player position, rotation, health, food, held item, crosshair target, open screen. |
 | `inventory` | | Non-empty inventory slots (0-8 hotbar, 9-35 main). |
 | `select` | `slot` 0-8 | Selects a hotbar slot. |
@@ -112,6 +117,12 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `baritone/wait` | `timeout` seconds | Waits until Baritone is idle. |
 
 While an agent has called the API in the last two minutes, the game doesn't open the pause menu when its window loses focus.
+
+## On-screen status
+
+* **Status line**: `status text=...` shows "Claude: ..." centred above the hotbar, wrapped to two lines. It stays while the agent keeps acting and fades three minutes after the last update.
+* **Spoken status**: `/tether tts` in game toggles reading each new status line aloud (`/tether tts on`, `/tether tts off`); the choice is saved in `config/tether.properties`. It uses Minecraft's own speech engine directly, so the menu narrator can stay off and the voice comes out of the game's audio. It needs `flite` installed.
+* **Red border**: a 2 px red frame around the game, also over open screens, while the agent is acting: for 8 seconds after any route that changes something, and for as long as a build, pillar, held keys or Baritone path is running. Read-only routes don't raise it.
 
 ## Building
 

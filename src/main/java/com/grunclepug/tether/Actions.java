@@ -90,8 +90,11 @@ public final class Actions {
     static void tick(Minecraft mc) {
         if (mc.player == null || mc.level == null || mc.gameMode == null) {
             stopAll(mc);
+            Agent.jobRunning = false;
             return;
         }
+        Agent.jobRunning = job != null || pillar != null || !held.isEmpty()
+                || (baritone && com.grunclepug.tether.compat.BaritoneCompat.busy());
         if (!held.isEmpty()) {
             Iterator<Map.Entry<KeyMapping, Integer>> it = held.entrySet().iterator();
             while (it.hasNext()) {
