@@ -83,6 +83,7 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 | `help` | | Lists routes and which integrations are loaded. |
 | `status` | `text`, or `clear` | Sets or clears the status line above the hotbar. |
 | `status/tts` | `enabled` | Reads or sets whether status lines are spoken. |
+| `say` | `text` (Markdown) | Mirrors an agent chat message onto the status line, only while the agent is working in the game. |
 | `resume` | | Lifts a pause; the running build or pillar carries on from where it stopped. |
 | `state` | | Player position, rotation, health, food, held item, crosshair target, open screen. |
 | `inventory` | | Non-empty inventory slots (0-8 hotbar, 9-35 main). |
@@ -120,6 +121,24 @@ Each route takes a JSON object body and returns a JSON object; errors come back 
 
 While an agent has called the API in the last two minutes, the game doesn't open the pause menu when its window loses focus.
 
+## Claude Code hook
+
+`cli/claude-say` is a Claude Code `MessageDisplay` hook that sends every text block the assistant shows in a session to `say`, so a stream of the game shows what the agent is telling you. It only acts for session ids listed one per line in `$XDG_STATE_HOME/tether/say-sessions` (default `~/.local/state/tether/say-sessions`), and exits quietly when the game isn't running.
+
+```json
+{
+  "hooks": {
+    "MessageDisplay": [
+      {"hooks": [{"type": "command", "command": "sh /path/to/tether/cli/claude-say", "timeout": 5}]}
+    ]
+  }
+}
+```
+
+```sh
+echo "<session id>" >> ~/.local/state/tether/say-sessions   # opt a session in
+```
+
 ## Pausing
 
 Press **Delete** (Controls > Tether > Pause Claude) to stop the agent at once, in the world or with a screen open. Held keys are released, Baritone's path is cancelled and a half-mined block is let go, but the running build or pillar keeps its place in the list. While paused, every route that acts on the game fails with "paused by the player", read-only routes still work, and the status line says so. The agent resumes with the `resume` route once you've talked it through; `/tether resume` in game does the same, and `/tether pause` pauses. On resume, a let-go block is mined again from the start and an interrupted walk is walked again.
@@ -128,6 +147,7 @@ Press **Delete** (Controls > Tether > Pause Claude) to stop the agent at once, i
 
 * **Status line**: `status text=...` shows "Claude: ..." centred above the hotbar, wrapped to two lines. It stays while the agent keeps acting and fades three minutes after the last update.
 * **Spoken status**: `/tether tts` in game toggles reading each new status line aloud (`/tether tts on`, `/tether tts off`); the choice is saved in `config/tether.properties`. It uses Minecraft's own speech engine directly, so the menu narrator can stay off and the voice comes out of the game's audio. It needs `flite` installed.
+* **Mirrored chat**: `say` puts an agent's chat message on the status line as plain text (Markdown stripped, up to five lines) and speaks it when TTS is on, but only while the agent is working in the game: during a build, pillar or Baritone path, or within two minutes of its last action. A message said just before the agent starts acting is held for 30 seconds and shown when it does; while paused nothing is mirrored.
 * **Red border**: a 2 px red frame around the game, also over open screens, while the agent is acting: for 8 seconds after any route that changes something, and for as long as a build, pillar, held keys or Baritone path is running. Read-only routes don't raise it.
 
 ## Building

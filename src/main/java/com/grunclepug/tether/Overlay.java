@@ -19,14 +19,18 @@ import java.util.List;
 final class Overlay {
     /** A status line stays up this long after its last update, or as long as the agent keeps acting. */
     private static final long STATUS_MS = 180_000;
-    private static final int MAX_CHARS = 200;
-    private static final int MAX_LINES = 2;
+    private static final int MAX_CHARS = 600;
+    private static final int MAX_LINES = 5;
+    /** A chat message said just before the agent starts acting is shown if it starts within this long. */
+    private static final long PENDING_MS = 30_000;
     private static final int BORDER_PX = 2;
     private static final int BORDER_COLOR = 0xFFFF2020;
     private static final int LABEL_COLOR = 0xFFE0875F;
 
     private static volatile String status;
     private static volatile long statusTime;
+    private static String pending;
+    private static long pendingTime;
 
     private Overlay() {
     }
@@ -54,6 +58,63 @@ final class Overlay {
         if (Settings.tts) {
             speak("Paused. Tell Claude what's up.");
         }
+    }
+
+    /**
+     * Mirrors one of the agent's chat messages (client thread). Shown and spoken while the agent is working in the
+     * game; otherwise held briefly in case it is about to start, then dropped. Returns whether it was shown.
+     */
+    static boolean say(String markdown) {
+        String text = plain(markdown);
+        if (text.isEmpty() || Agent.paused) {
+            return false;
+        }
+        if (Agent.sayActive()) {
+            pending = null;
+            setStatus(text);
+            return true;
+        }
+        pending = text;
+        pendingTime = System.currentTimeMillis();
+        return false;
+    }
+
+    /** Called when the agent acts: shows a message it said just before starting. */
+    static void flushPending() {
+        if (pending != null && System.currentTimeMillis() - pendingTime < PENDING_MS) {
+            setStatus(pending);
+        }
+        pending = null;
+    }
+
+    /** Markdown to one line of plain text: no code fences, emphasis, link targets, headings or table rules. */
+    static String plain(String md) {
+        StringBuilder out = new StringBuilder();
+        boolean fence = false;
+        for (String line : md.split("\\R")) {
+            String l = line.strip();
+            if (l.startsWith("```")) {
+                fence = !fence;
+                continue;
+            }
+            if (fence || l.isEmpty() || l.matches("\\|?\\s*:?-{3,}.*")) {
+                continue;
+            }
+            if (l.matches("^#{1,6}\\s+.*") && !l.matches(".*[.:!?]$")) {
+                l = l + ":";
+            }
+            l = l.replaceFirst("^#{1,6}\\s+", "")
+                    .replaceFirst("^[-*+]\\s+", "• ")
+                    .replaceAll("\\[([^\\]]+)]\\([^)]*\\)", "$1")
+                    .replaceAll("\\*\\*|__|`", "")
+                    .replaceAll("^\\|\\s*|\\s*\\|$", "")
+                    .replaceAll("\\s*\\|\\s*", " | ");
+            if (out.length() > 0) {
+                out.append(' ');
+            }
+            out.append(l);
+        }
+        return out.toString().replaceAll("\\s+", " ").strip();
     }
 
     static String status() {
@@ -119,7 +180,7 @@ final class Overlay {
     private static void drawStatus(GuiGraphics g, Font font, String text) {
         int screenW = g.guiWidth();
         int screenH = g.guiHeight();
-        int maxW = Math.min(320, screenW - 40);
+        int maxW = Math.min(380, screenW - 40);
         Component line = Component.literal("Claude: ").withStyle(Style.EMPTY.withColor(LABEL_COLOR))
                 .append(Component.literal(text).withStyle(Style.EMPTY.withColor(0xFFFFFFFF)));
         List<FormattedCharSequence> lines = font.split(line, maxW);

@@ -61,6 +61,11 @@ final class Routes {
         r.put("state", a -> client(this::state));
         r.put("inventory", a -> client(this::inventory));
         r.put("status", a -> client(() -> status(a)));
+        r.put("say", a -> client(() -> {
+            JsonObject o = new JsonObject();
+            o.addProperty("shown", Overlay.say(Args.s(a, "text")));
+            return o;
+        }));
         r.put("resume", a -> client(() -> {
             Actions.resume();
             JsonObject o = Actions.jobProgress();

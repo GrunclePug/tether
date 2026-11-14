@@ -6,6 +6,8 @@ public final class Agent {
     private static final long ACTIVE_MS = 120_000;
     /** How long after the last control action the red border stays up. */
     private static final long CONTROL_MS = 8_000;
+    /** How long after the last control action the agent's chat is still mirrored onto the status line. */
+    private static final long SAY_MS = 120_000;
 
     private static volatile long lastCall;
     private static volatile long lastControl;
@@ -26,6 +28,12 @@ public final class Agent {
     /** Called for routes that act on the game (as opposed to reading it). */
     static void control() {
         lastControl = System.currentTimeMillis();
+        net.minecraft.client.Minecraft.getInstance().execute(Overlay::flushPending);
+    }
+
+    /** True while the agent is working in the game: its chat messages show on the status line. */
+    static boolean sayActive() {
+        return !paused && (jobRunning || System.currentTimeMillis() - lastControl < SAY_MS);
     }
 
     /** True while an agent has called the API recently; the game then doesn't pause when the window loses focus. */

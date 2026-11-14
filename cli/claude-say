@@ -1,0 +1,28 @@
+#!/bin/sh
+# claude-say: a Claude Code MessageDisplay hook that mirrors the assistant's chat text onto tether's in-game status
+# line (and voice, when TTS is on). The game decides whether to show it: only while the agent is working in it.
+#
+# Opt-in per session: it acts only for session ids listed one per line in $XDG_STATE_HOME/tether/say-sessions
+# (default ~/.local/state/tether/say-sessions). Anything else, or no running game, and it exits quietly.
+#
+# Hook config (settings.json):  "MessageDisplay": [{"hooks": [{"type": "command", "command": "/path/to/claude-say"}]}]
+state=${XDG_STATE_HOME:-$HOME/.local/state}/tether
+in=$(cat)
+
+session=$(printf '%s' "$in" | jq -r '.session_id // empty')
+[ -n "$session" ] && grep -qxF "$session" "$state/say-sessions" 2>/dev/null || exit 0
+[ "$(printf '%s' "$in" | jq -r '.hook_event_name')" = MessageDisplay ] || exit 0
+
+# A text block may arrive in several deltas; collect them per message and block until the final one.
+mkdir -p "$state/say"
+find "$state/say" -type f -mmin +60 -delete 2>/dev/null
+key=$(printf '%s' "$in" | jq -r '"\(.message_id)-\(.index)"' | tr -c 'A-Za-z0-9-' '_')
+buf="$state/say/$key"
+printf '%s' "$in" | jq -j '.delta // "" | if type == "string" then . else tostring end' >> "$buf"
+[ "$(printf '%s' "$in" | jq -r '.final')" = true ] || exit 0
+
+text=$(cat "$buf")
+rm -f "$buf"
+[ -n "$text" ] || exit 0
+timeout 3 "$(dirname "$0")/tether" say "$(jq -n --arg t "$text" '{text: $t}')" >/dev/null 2>&1
+exit 0
